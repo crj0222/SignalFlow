@@ -101,8 +101,14 @@ class SignalFlowBot(commands.Bot):
                 log.exception("Failed to DM entry alert to user %s", user_id)
         return routed
 
+    def _trim_gain_pct(self, entry_price: Optional[float], trim_price: Optional[float]) -> Optional[float]:
+        if entry_price is None or trim_price is None or entry_price <= 0:
+            return None
+        return ((trim_price - entry_price) / entry_price) * 100
+
     async def _route_exit_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
         routed = 0
+        missing_trade_details = not (parsed.ticker or parsed.contract)
         for user_id in self.db.subscribed_users(guild.id, analyst.id):
             positions = self.db.find_open_positions(guild.id, user_id, analyst.id, parsed.ticker, parsed.contract)
             if not positions:
@@ -122,12 +128,13 @@ class SignalFlowBot(commands.Bot):
                 parsed,
                 ticker=parsed.ticker or position["ticker"],
                 contract=parsed.contract or position["contract"],
-                expiration=parsed.expiration or position["expiration"],
+                expiration=position["expiration"] if missing_trade_details else (parsed.expiration or position["expiration"]),
                 confidence="normal",
             )
+            gain_pct = self._trim_gain_pct(position["entry_price"], display_parsed.price) if parsed.action == "trim" else None
             try:
                 await user.send(
-                    embed=exit_alert_embed(analyst, display_parsed, possible=False),
+                    embed=exit_alert_embed(analyst, display_parsed, possible=False, gain_pct=gain_pct),
                     view=view,
                 )
                 routed += 1

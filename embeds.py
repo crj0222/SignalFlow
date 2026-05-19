@@ -1,4 +1,5 @@
 import discord
+from typing import Optional
 
 from models import Analyst, ParsedAlert
 
@@ -11,7 +12,10 @@ FOOTER = "SignalFlow • Alert routing only, not financial advice"
 
 
 def _value(value: object) -> str:
-    return str(value) if value not in (None, "") else "Not detected"
+    if value in (None, ""):
+        return "Not detected"
+    text = str(value).strip()
+    return "Not detected" if text.lower() in {"null", "none", "n/a", "na"} else text
 
 
 def _option_side(contract: str | None) -> str:
@@ -35,6 +39,13 @@ def _trade_line(parsed: ParsedAlert) -> str:
 
 def _price_line(parsed: ParsedAlert) -> str:
     return f"${parsed.price:.2f}" if parsed.price is not None else "Not detected"
+
+
+def _gain_line(gain_pct: Optional[float]) -> str:
+    if gain_pct is None:
+        return "Not detected"
+    sign = "+" if gain_pct >= 0 else ""
+    return f"{sign}{gain_pct:.1f}%"
 
 
 def start_embed() -> discord.Embed:
@@ -93,21 +104,31 @@ def entry_alert_embed(analyst: Analyst, parsed: ParsedAlert) -> discord.Embed:
     return embed
 
 
-def exit_alert_embed(analyst: Analyst, parsed: ParsedAlert, possible: bool = False) -> discord.Embed:
+def exit_alert_embed(
+    analyst: Analyst,
+    parsed: ParsedAlert,
+    possible: bool = False,
+    gain_pct: Optional[float] = None,
+) -> discord.Embed:
     if parsed.action == "stop":
         title = "⚠️ Possible Stop Alert" if possible else "⚠️ Stop-Out Alert"
+        top_note = "Stop update"
+    elif parsed.action == "trim":
+        title = "⚠️ Possible Trim Alert" if possible else "🔔 Trim Alert"
+        top_note = "Trim update"
     else:
-        title = "⚠️ Possible Trim Alert" if possible else "🔔 Trim/Sell Alert"
+        title = "⚠️ Possible Sell Alert" if possible else "🔔 Sell Alert"
+        top_note = "Exit update"
     embed = discord.Embed(
         title=title,
-        description=f"**{analyst.name}** posted an update for a trade you marked as taken.",
+        description=f"**{_trade_line(parsed)}**\n{top_note}",
         color=WARNING_COLOR if possible else BRAND_COLOR,
     )
-    embed.add_field(name="Ticker", value=_value(parsed.ticker), inline=True)
-    embed.add_field(name="Contract", value=_value(parsed.contract), inline=True)
+    embed.add_field(name="Price", value=_price_line(parsed), inline=True)
+    if parsed.action == "trim":
+        embed.add_field(name="Gain", value=_gain_line(gain_pct), inline=True)
     embed.add_field(name="Expiration", value=_value(parsed.expiration), inline=True)
-    embed.add_field(name="Price", value=f"${parsed.price:.2f}" if parsed.price is not None else "Not detected", inline=True)
-    embed.add_field(name="Action", value=parsed.action.title(), inline=True)
+    embed.add_field(name="Analyst", value=analyst.name, inline=True)
     embed.set_footer(text=FOOTER)
     return embed
 
