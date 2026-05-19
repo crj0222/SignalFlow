@@ -49,6 +49,18 @@ def _gain_line(gain_pct: Optional[float]) -> str:
     return f"{sign}{gain_pct:.1f}%"
 
 
+def _set_footer(embed: discord.Embed, logo_url: Optional[str] = None) -> None:
+    if logo_url:
+        embed.set_footer(text=FOOTER, icon_url=logo_url)
+    else:
+        embed.set_footer(text=FOOTER)
+
+
+def _add_server(embed: discord.Embed, guild_name: Optional[str]) -> None:
+    if guild_name:
+        embed.add_field(name="Server", value=guild_name, inline=False)
+
+
 def start_embed() -> discord.Embed:
     embed = discord.Embed(
         title="SignalFlow",
@@ -61,7 +73,7 @@ def start_embed() -> discord.Embed:
     )
     embed.add_field(name="Get started", value="Use `/select_analysts` to choose whose alerts you want.", inline=False)
     embed.add_field(name="Control", value="Use `/pause_alerts` and `/resume_alerts` whenever you need quiet.", inline=False)
-    embed.set_footer(text=FOOTER)
+    _set_footer(embed)
     return embed
 
 
@@ -86,11 +98,16 @@ def help_embed() -> discord.Embed:
         value="Use `/admin_add_analyst`, `/admin_set_channel`, `/admin_list_analysts`, and `/admin_add_example` to manage routing.",
         inline=False,
     )
-    embed.set_footer(text=FOOTER)
+    _set_footer(embed)
     return embed
 
 
-def entry_alert_embed(analyst: Analyst, parsed: ParsedAlert) -> discord.Embed:
+def entry_alert_embed(
+    analyst: Analyst,
+    parsed: ParsedAlert,
+    guild_name: Optional[str] = None,
+    logo_url: Optional[str] = None,
+) -> discord.Embed:
     side = _option_side(parsed.contract)
     style = _value(parsed.trade_note)
     description = f"**{_trade_line(parsed)}**"
@@ -104,7 +121,8 @@ def entry_alert_embed(analyst: Analyst, parsed: ParsedAlert) -> discord.Embed:
     embed.add_field(name="Entry", value=_price_line(parsed), inline=True)
     embed.add_field(name="Expiration", value=_value(parsed.expiration), inline=True)
     embed.add_field(name="Analyst", value=analyst.name, inline=True)
-    embed.set_footer(text=FOOTER)
+    _add_server(embed, guild_name)
+    _set_footer(embed, logo_url)
     return embed
 
 
@@ -113,6 +131,8 @@ def exit_alert_embed(
     parsed: ParsedAlert,
     possible: bool = False,
     gain_pct: Optional[float] = None,
+    guild_name: Optional[str] = None,
+    logo_url: Optional[str] = None,
 ) -> discord.Embed:
     if parsed.action == "trim":
         title = "⚠️ Possible Trim Alert" if possible else "🔔 Trim Alert"
@@ -136,23 +156,24 @@ def exit_alert_embed(
         embed.add_field(name="P/L", value=_gain_line(gain_pct), inline=True)
     embed.add_field(name="Expiration", value=_value(parsed.expiration), inline=True)
     embed.add_field(name="Analyst", value=analyst.name, inline=True)
-    embed.set_footer(text=FOOTER)
+    _add_server(embed, guild_name)
+    _set_footer(embed, logo_url)
     return embed
 
 
 def success_embed(message: str) -> discord.Embed:
     embed = discord.Embed(title="✅ Done", description=message, color=SUCCESS_COLOR)
-    embed.set_footer(text=FOOTER)
+    _set_footer(embed)
     return embed
 
 
 def warning_embed(message: str) -> discord.Embed:
     embed = discord.Embed(title="⚠️ Review", description=message, color=WARNING_COLOR)
-    embed.set_footer(text=FOOTER)
+    _set_footer(embed)
     return embed
 
 
 def list_embed(title: str, lines: list[str], empty: str) -> discord.Embed:
     embed = discord.Embed(title=title, description="\n".join(lines) if lines else empty, color=BRAND_COLOR)
-    embed.set_footer(text=FOOTER)
+    _set_footer(embed)
     return embed

@@ -146,11 +146,6 @@ class ExitAlertView(discord.ui.View):
         self.position_id = position_id
         self.alert_id = alert_id
 
-    @discord.ui.button(label="Trimmed", style=discord.ButtonStyle.success, custom_id="signalflow:trimmed")
-    async def trimmed(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        self.db.mark_alert_action(self.alert_id, self.guild_id, interaction.user.id, "trimmed")
-        await interaction.response.send_message(embed=success_embed("Marked as trimmed. Position remains open."), ephemeral=True)
-
     @discord.ui.button(label="Close Position", style=discord.ButtonStyle.danger, custom_id="signalflow:close_position")
     async def close_position(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         closed = self.db.close_position(self.position_id, interaction.user.id)

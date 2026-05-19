@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, Iterable, Optional
 
@@ -176,6 +177,26 @@ def _sanitize(parsed: Optional[ParsedAlert], content: str) -> Optional[ParsedAle
     return None if (_looks_forward_only(content, parsed) or _invalid_entry(parsed)) else parsed
 
 
+def _prefer_local_exit_action(parsed: Optional[ParsedAlert], content: str) -> Optional[ParsedAlert]:
+    if not parsed or parsed.action != "entry":
+        return parsed
+
+    local = parse_alert(content)
+    if not local or local.action not in {"trim", "close"}:
+        return parsed
+
+    return replace(
+        parsed,
+        action=local.action,
+        confidence=local.confidence,
+        ticker=parsed.ticker or local.ticker,
+        contract=parsed.contract or local.contract,
+        expiration=parsed.expiration or local.expiration,
+        price=local.price if local.price is not None else parsed.price,
+        trade_note=parsed.trade_note or local.trade_note,
+    )
+
+
 def _should_skip_ai(content: str) -> bool:
     stripped = content.strip()
     if not stripped:
@@ -332,7 +353,7 @@ async def classify_alert(content: str, examples: Optional[Iterable[Any]] = None)
     if AI_ENABLED and os.getenv("OPENAI_API_KEY", "").strip():
         try:
             parsed = await _classify_with_openai(content, examples)
-            return _sanitize(parsed, content)
+            return _sanitize(_prefer_local_exit_action(parsed, content), content)
         except Exception as exc:
             # Keep the bot running if the AI provider is unavailable.
             log.warning(

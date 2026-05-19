@@ -173,6 +173,7 @@ MONTHS = {
 }
 
 COMMON_NON_TICKERS = {
+    "A",
     "ADD",
     "ADDED",
     "ALERT",
@@ -484,16 +485,16 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
     if has_soft_ignore and not (has_strong_entry or has_exit or has_stop):
         return None
 
-    # Exit/stop words win over broad entry words, so "Closed ... in profit" is not rejected as an entry.
+    # Exit/stop words win over broad entry words, so "taking a trim" is not routed as a new entry.
     if has_stop:
         action = "close"
-    elif has_strong_entry:
-        action = "entry"
     elif has_exit or has_runner_trim:
         action = "trim" if _contains_any(upper, ("TRIM", "TRIMMED", "TRIMMING", "SCALED", "SCALE OUT", "SCALING OUT")) else "close"
         if has_runner_trim and not has_exit:
             action = "trim"
         price = parse_exit_price(cleaned)
+    elif has_strong_entry:
+        action = "entry"
     elif has_entry or has_clean_trade_details:
         action = "entry"
     else:

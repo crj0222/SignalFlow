@@ -103,9 +103,12 @@ class SignalFlowBot(commands.Bot):
             return await self._route_exit_alert(guild, analyst, parsed, alert_id)
         return 0
 
+    def _logo_url(self) -> Optional[str]:
+        return self.user.display_avatar.url if self.user else None
+
     async def _route_entry_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
         routed = 0
-        embed = entry_alert_embed(analyst, parsed)
+        embed = entry_alert_embed(analyst, parsed, guild_name=guild.name, logo_url=self._logo_url())
         for user_id in self.db.subscribed_users(guild.id, analyst.id):
             user = self.get_user(user_id) or await self.fetch_user(user_id)
             if not user:
@@ -178,7 +181,14 @@ class SignalFlowBot(commands.Bot):
                 gain_pct = parse_gain_percent(parsed.raw_text)
             try:
                 await user.send(
-                    embed=exit_alert_embed(analyst, display_parsed, possible=False, gain_pct=gain_pct),
+                    embed=exit_alert_embed(
+                        analyst,
+                        display_parsed,
+                        possible=False,
+                        gain_pct=gain_pct,
+                        guild_name=guild.name,
+                        logo_url=self._logo_url(),
+                    ),
                     view=view,
                 )
                 if closes_analyst_trade:
