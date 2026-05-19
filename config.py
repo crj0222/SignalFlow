@@ -15,10 +15,17 @@ class BotConfig:
     database_path: str
 
 
+def _clean_env_value(value: str) -> str:
+    cleaned = value.strip()
+    if "=" in cleaned and cleaned.split("=", 1)[0].strip().isupper():
+        cleaned = cleaned.split("=", 1)[1].strip()
+    return cleaned.strip().strip('"').strip("'").strip()
+
+
 def load_config() -> BotConfig:
-    token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
-    guild_id_raw = os.getenv("GUILD_ID", "").strip()
-    database_path = os.getenv("DATABASE_PATH", "signalflow.sqlite3").strip()
+    token = _clean_env_value(os.getenv("DISCORD_BOT_TOKEN", ""))
+    guild_id_raw = _clean_env_value(os.getenv("GUILD_ID", ""))
+    database_path = _clean_env_value(os.getenv("DATABASE_PATH", "signalflow.sqlite3"))
 
     if not token:
         raise RuntimeError("DISCORD_BOT_TOKEN is missing. Add it to your .env file.")
