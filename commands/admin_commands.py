@@ -250,9 +250,14 @@ class AdminCommands(commands.Cog):
             await interaction.response.send_message(embed=warning_embed("I could not find that analyst."), ephemeral=True)
             return
 
-        count = self.db.close_all_entry_alerts(interaction.guild_id, analyst_row.id)
+        alert_count = self.db.close_all_entry_alerts(interaction.guild_id, analyst_row.id)
+        user_position_count = self.db.close_all_user_positions(interaction.guild_id, analyst_row.id)
         await interaction.response.send_message(
-            embed=success_embed(f"Cleared {count} open tracked position(s) for **{analyst_row.name}**."),
+            embed=success_embed(
+                f"Cleared **{analyst_row.name}** memory.\n"
+                f"Analyst positions closed: `{alert_count}`\n"
+                f"User tracked positions closed: `{user_position_count}`"
+            ),
             ephemeral=True,
         )
 

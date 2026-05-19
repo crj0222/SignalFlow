@@ -634,6 +634,18 @@ class Database:
             )
             return cur.rowcount
 
+    def close_all_user_positions(self, guild_id: int, analyst_id: int) -> int:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE user_positions
+                SET status = 'closed', closed_at = CURRENT_TIMESTAMP
+                WHERE guild_id = ? AND analyst_id = ? AND status = 'open'
+                """,
+                (guild_id, analyst_id),
+            )
+            return cur.rowcount
+
     def close_matching_entry_alerts(
         self,
         guild_id: int,
