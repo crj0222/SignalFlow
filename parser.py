@@ -208,7 +208,7 @@ def parse_trade_note(text: str) -> str:
     if re.search(r"\b(DAY TRADE|DAYTRADE|SCALP|SCALPING|INTRADAY)\b", upper):
         notes.append("Day Trade")
 
-    return " / ".join(notes) if notes else "Day Trade"
+    return " / ".join(notes) if notes else ""
 
 
 def parse_price(text: str, contract: Optional[str] = None) -> Optional[float]:

@@ -94,7 +94,7 @@ OBVIOUS_CHATTER = {
 SYSTEM_PROMPT = """
 Classify a Discord trading alert. Return only JSON:
 {"action":"entry|trim|exit|stop|ignore","ticker":null,"contract":null,"expiration":null,"price":null,"trade_note":null,"confidence":"normal|possible"}
-trade_note should be "Half Size", "Light", "Lotto", "Swing", "Day Trade", a slash-combo like "Light / Lotto", or null.
+trade_note should be "Half Size", "Light", "Lotto", "Swing", "Day Trade", a slash-combo like "Light / Lotto", or null. Only use "Day Trade" if the message explicitly says day trade/daytrade/scalp/intraday.
 entry=taking/filled/bought/opening/adding/grabbing/starting a position now. trim=partial scale out/trim/sell some. exit=full close/all out/sold/STC. stop=stopped out/stop loss hit/cut here/invalidated. ignore=watchlist/idea/maybe/recap/uncertain.
 Extract ticker, option contract like 530C, expiration like 5/24, and price. Do not invent missing details. If trim/exit/stop lacks ticker or contract, confidence="possible".
 Price means the option fill/entry/trim/exit price, such as "@ 1.20", "at .95", "paid 1.35", "avg 1.10", "filled 2.40", "Entry: 4.20-4.30", or a decimal right after the contract. For ranges, use the first number.

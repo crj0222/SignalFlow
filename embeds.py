@@ -92,9 +92,12 @@ def help_embed() -> discord.Embed:
 def entry_alert_embed(analyst: Analyst, parsed: ParsedAlert) -> discord.Embed:
     side = _option_side(parsed.contract)
     style = _value(parsed.trade_note)
+    description = f"**{_trade_line(parsed)}**"
+    if style != "Not detected":
+        description = f"{description}\n{style}"
     embed = discord.Embed(
         title=f"🚨 {side} Entry",
-        description=f"**{_trade_line(parsed)}**\n{style}",
+        description=description,
         color=BRAND_COLOR,
     )
     embed.add_field(name="Entry", value=_price_line(parsed), inline=True)
