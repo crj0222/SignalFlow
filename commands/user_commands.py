@@ -64,8 +64,8 @@ class UserCommands(commands.Cog):
     async def start(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(embed=start_embed(), ephemeral=True)
 
-    @app_commands.command(name="help", description="Show SignalFlow commands and alert controls.")
-    async def help(self, interaction: discord.Interaction) -> None:
+    @app_commands.command(name="signalflow_help", description="Show SignalFlow commands and alert controls.")
+    async def signalflow_help(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(embed=help_embed(), ephemeral=True)
 
     @app_commands.command(name="select_analysts", description="Choose which analysts can DM you alerts.")
@@ -108,13 +108,32 @@ class UserCommands(commands.Cog):
 
         analyst_row = self.db.get_analyst_by_user_id(interaction.guild_id, analyst.id)
         if not analyst_row:
+            names_to_try = [
+                getattr(analyst, "display_name", None),
+                getattr(analyst, "global_name", None),
+                analyst.name,
+            ]
+            for name in [name for name in names_to_try if name]:
+                analyst_row = self.db.get_analyst_by_name(interaction.guild_id, name)
+                if analyst_row:
+                    break
+
+        if not analyst_row:
             await interaction.response.send_message(
                 embed=warning_embed("That analyst is not configured in this server."),
                 ephemeral=True,
             )
             return
 
-        positions = self.db.list_open_entry_alerts(interaction.guild_id, analyst_row.id)
+        names_to_try = [
+            analyst_row.name,
+            getattr(analyst, "display_name", None),
+            getattr(analyst, "global_name", None),
+            analyst.name,
+        ]
+        positions = self.db.list_open_entry_alerts_for_analyst_user(interaction.guild_id, analyst.id, names_to_try)
+        if not positions:
+            positions = self.db.list_open_entry_alerts(interaction.guild_id, analyst_row.id)
         lines = []
         for pos in positions:
             trade = " ".join(part for part in [pos["ticker"], pos["expiration"], pos["contract"]] if part)

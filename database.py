@@ -433,6 +433,40 @@ class Database:
                 (guild_id, analyst_id),
             ).fetchall()
 
+    def list_open_entry_alerts_for_analyst_user(
+        self,
+        guild_id: int,
+        discord_user_id: int,
+        names: Iterable[str] = (),
+    ) -> list[sqlite3.Row]:
+        clean_names = [name.strip() for name in names if name and name.strip()]
+        mention_names = [str(discord_user_id), f"<@{discord_user_id}>", f"<@!{discord_user_id}>"]
+        all_names = list(dict.fromkeys(clean_names + mention_names))
+        placeholders = ",".join("?" for _ in all_names) or "NULL"
+
+        with self.connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT al.* FROM alert_logs al
+                JOIN analysts a ON a.id = al.analyst_id
+                WHERE al.guild_id = ?
+                AND al.action = 'entry'
+                AND COALESCE(al.status, 'open') = 'open'
+                AND (
+                    a.discord_user_id = ?
+                    OR a.name IN ({placeholders})
+                    OR lower(a.name) IN ({placeholders})
+                )
+                ORDER BY al.created_at DESC, al.id DESC
+                """,
+                (
+                    guild_id,
+                    discord_user_id,
+                    *all_names,
+                    *[name.lower() for name in all_names],
+                ),
+            ).fetchall()
+
     def close_entry_alert(self, alert_id: int) -> None:
         with self.connect() as conn:
             conn.execute(
