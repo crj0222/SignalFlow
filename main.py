@@ -1,4 +1,5 @@
 import logging
+from dataclasses import replace
 from typing import Optional
 
 import discord
@@ -45,7 +46,9 @@ class SignalFlowBot(commands.Bot):
         log.info("SignalFlow is online as %s", self.user)
 
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot or not message.guild:
+        if not message.guild:
+            return
+        if self.user and message.author.id == self.user.id:
             return
 
         analyst = self.db.get_analyst_for_channel(message.guild.id, message.channel.id)
@@ -100,7 +103,6 @@ class SignalFlowBot(commands.Bot):
 
     async def _route_exit_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
         routed = 0
-        possible = parsed.confidence == "possible" or not (parsed.ticker or parsed.contract)
         for user_id in self.db.subscribed_users(guild.id, analyst.id):
             positions = self.db.find_open_positions(guild.id, user_id, analyst.id, parsed.ticker, parsed.contract)
             if not positions:
@@ -116,9 +118,16 @@ class SignalFlowBot(commands.Bot):
                 if parsed.action == "stop"
                 else ExitAlertView(self.db, guild.id, position["id"], alert_id)
             )
+            display_parsed = replace(
+                parsed,
+                ticker=parsed.ticker or position["ticker"],
+                contract=parsed.contract or position["contract"],
+                expiration=parsed.expiration or position["expiration"],
+                confidence="normal",
+            )
             try:
                 await user.send(
-                    embed=exit_alert_embed(analyst, parsed, possible=possible),
+                    embed=exit_alert_embed(analyst, display_parsed, possible=False),
                     view=view,
                 )
                 routed += 1
