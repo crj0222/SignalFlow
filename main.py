@@ -1,0 +1,140 @@
+import logging
+from typing import Optional
+
+import discord
+from discord.ext import commands
+
+from commands import admin_commands, user_commands
+from config import load_config
+from database import Database
+from embeds import entry_alert_embed, exit_alert_embed
+from models import Analyst, ParsedAlert
+from classifier import classify_alert
+from views import EntryAlertView, ExitAlertView, StopAlertView
+
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("signalflow")
+
+
+class SignalFlowBot(commands.Bot):
+    def __init__(self, db: Database, guild_id: Optional[int]) -> None:
+        intents = discord.Intents.default()
+        intents.guilds = True
+        intents.members = True
+        intents.messages = True
+        intents.message_content = True
+        super().__init__(command_prefix="!", intents=intents)
+        self.db = db
+        self.guild_id = guild_id
+
+    async def setup_hook(self) -> None:
+        await user_commands.setup(self, self.db)
+        await admin_commands.setup(self, self.db)
+
+        if self.guild_id:
+            guild = discord.Object(id=self.guild_id)
+            self.tree.copy_global_to(guild=guild)
+            synced = await self.tree.sync(guild=guild)
+            log.info("Synced %s guild slash commands to %s", len(synced), self.guild_id)
+        else:
+            synced = await self.tree.sync()
+            log.info("Synced %s global slash commands", len(synced))
+
+    async def on_ready(self) -> None:
+        log.info("SignalFlow is online as %s", self.user)
+
+    async def on_message(self, message: discord.Message) -> None:
+        if message.author.bot or not message.guild:
+            return
+
+        analyst = self.db.get_analyst_for_channel(message.guild.id, message.channel.id)
+        if not analyst:
+            return
+
+        parsed = await classify_alert(message.content)
+        if not parsed:
+            return
+        log.info(
+            "Parsed alert action=%s ticker=%s contract=%s expiration=%s price=%s",
+            parsed.action,
+            parsed.ticker,
+            parsed.contract,
+            parsed.expiration,
+            parsed.price,
+        )
+
+        routed = await self.route_alert(message.guild, analyst, parsed, message.channel.id, message.id)
+        log.info("Routed %s alert from %s to %s user(s)", parsed.action, analyst.name, routed)
+
+    async def route_alert(
+        self,
+        guild: discord.Guild,
+        analyst: Analyst,
+        parsed: ParsedAlert,
+        channel_id: Optional[int],
+        message_id: Optional[int],
+    ) -> int:
+        alert_id = self.db.log_alert(guild.id, analyst.id, channel_id, message_id, parsed)
+        if parsed.is_entry:
+            return await self._route_entry_alert(guild, analyst, parsed, alert_id)
+        if parsed.is_exit:
+            return await self._route_exit_alert(guild, analyst, parsed, alert_id)
+        return 0
+
+    async def _route_entry_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
+        routed = 0
+        embed = entry_alert_embed(analyst, parsed)
+        for user_id in self.db.subscribed_users(guild.id, analyst.id):
+            user = self.get_user(user_id) or await self.fetch_user(user_id)
+            if not user:
+                continue
+            try:
+                await user.send(embed=embed, view=EntryAlertView(self.db, guild.id, analyst.id, alert_id))
+                routed += 1
+            except discord.Forbidden:
+                log.warning("Cannot DM user %s; DMs may be closed", user_id)
+            except discord.HTTPException:
+                log.exception("Failed to DM entry alert to user %s", user_id)
+        return routed
+
+    async def _route_exit_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
+        routed = 0
+        possible = parsed.confidence == "possible" or not (parsed.ticker or parsed.contract)
+        for user_id in self.db.subscribed_users(guild.id, analyst.id):
+            positions = self.db.find_open_positions(guild.id, user_id, analyst.id, parsed.ticker, parsed.contract)
+            if not positions:
+                continue
+
+            user = self.get_user(user_id) or await self.fetch_user(user_id)
+            if not user:
+                continue
+
+            position = positions[0]
+            view = (
+                StopAlertView(self.db, guild.id, position["id"], alert_id)
+                if parsed.action == "stop"
+                else ExitAlertView(self.db, guild.id, position["id"], alert_id)
+            )
+            try:
+                await user.send(
+                    embed=exit_alert_embed(analyst, parsed, possible=possible),
+                    view=view,
+                )
+                routed += 1
+            except discord.Forbidden:
+                log.warning("Cannot DM user %s; DMs may be closed", user_id)
+            except discord.HTTPException:
+                log.exception("Failed to DM trim/exit alert to user %s", user_id)
+        return routed
+
+
+def main() -> None:
+    config = load_config()
+    db = Database(config.database_path)
+    bot = SignalFlowBot(db=db, guild_id=config.guild_id)
+    bot.run(config.token)
+
+
+if __name__ == "__main__":
+    main()
