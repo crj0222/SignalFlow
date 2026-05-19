@@ -11,6 +11,7 @@ from database import Database
 from embeds import entry_alert_embed, exit_alert_embed
 from models import Analyst, ParsedAlert
 from classifier import classify_alert
+from parser import parse_gain_percent
 from views import EntryAlertView, ExitAlertView
 
 
@@ -170,6 +171,8 @@ class SignalFlowBot(commands.Bot):
                     confidence="normal",
                 )
             gain_pct = self._trim_gain_pct(position["entry_price"], display_parsed.price) if parsed.action == "trim" else None
+            if gain_pct is None and parsed.action == "trim":
+                gain_pct = parse_gain_percent(parsed.raw_text)
             try:
                 await user.send(
                     embed=exit_alert_embed(analyst, display_parsed, possible=False, gain_pct=gain_pct),
