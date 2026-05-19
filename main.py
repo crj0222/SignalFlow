@@ -72,7 +72,8 @@ class SignalFlowBot(commands.Bot):
         if not analyst:
             return
 
-        parsed = await classify_alert(message.content)
+        examples = self.db.list_classifier_examples(message.guild.id)
+        parsed = await classify_alert(message.content, examples)
         if not parsed:
             return
         log.info(

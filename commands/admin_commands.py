@@ -4,6 +4,7 @@ from discord.ext import commands
 
 from database import Database
 from embeds import list_embed, success_embed, warning_embed
+from example_importer import examples_from_csv_bytes
 from models import ParsedAlert
 
 
@@ -122,6 +123,117 @@ class AdminCommands(commands.Cog):
 
         self.db.set_review_channel(interaction.guild_id, channel.id)
         await interaction.response.send_message(embed=success_embed(f"Review channel set to {channel.mention}."), ephemeral=True)
+
+    @app_commands.command(name="admin_add_example", description="Teach SignalFlow one server-specific classifier example.")
+    @app_commands.describe(
+        action="Correct classification for this example.",
+        text="Exact alert/message wording to use as an example.",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="Entry", value="entry"),
+            app_commands.Choice(name="Trim", value="trim"),
+            app_commands.Choice(name="Exit", value="exit"),
+            app_commands.Choice(name="Stop", value="stop"),
+            app_commands.Choice(name="Ignore", value="ignore"),
+        ]
+    )
+    @admin_only()
+    async def admin_add_example(
+        self,
+        interaction: discord.Interaction,
+        action: app_commands.Choice[str],
+        text: str,
+    ) -> None:
+        if not interaction.guild_id:
+            await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
+            return
+
+        clean_text = text.strip()
+        if not clean_text:
+            await interaction.response.send_message(embed=warning_embed("Example text cannot be blank."), ephemeral=True)
+            return
+        if len(clean_text) > 900:
+            await interaction.response.send_message(embed=warning_embed("Keep examples under 900 characters."), ephemeral=True)
+            return
+
+        example_id = self.db.add_classifier_example(interaction.guild_id, action.value, clean_text)
+        await interaction.response.send_message(
+            embed=success_embed(f"Saved example #{example_id} as `{action.value}`."),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="admin_list_examples", description="List this server's classifier examples.")
+    @admin_only()
+    async def admin_list_examples(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild_id:
+            await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
+            return
+
+        rows = self.db.list_classifier_examples(interaction.guild_id, limit=25)
+        lines = []
+        for row in rows:
+            text = row["example_text"].replace("\n", " ")
+            if len(text) > 90:
+                text = f"{text[:87]}..."
+            lines.append(f"#{row['id']} `{row['action']}` - {text}")
+
+        await interaction.response.send_message(
+            embed=list_embed("Classifier Examples", lines, "No classifier examples saved yet."),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="admin_import_examples_csv", description="Import classifier examples from a Discord CSV export.")
+    @app_commands.describe(
+        file="Discord export CSV with a Content column.",
+        max_per_action="Maximum examples to save per action from this file.",
+    )
+    @admin_only()
+    async def admin_import_examples_csv(
+        self,
+        interaction: discord.Interaction,
+        file: discord.Attachment,
+        max_per_action: int = 30,
+    ) -> None:
+        if not interaction.guild_id:
+            await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
+            return
+        if not file.filename.lower().endswith(".csv"):
+            await interaction.response.send_message(embed=warning_embed("Upload a `.csv` file."), ephemeral=True)
+            return
+        if file.size and file.size > 8_000_000:
+            await interaction.response.send_message(embed=warning_embed("CSV is too large. Keep uploads under 8 MB."), ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            data = await file.read()
+            examples, stats = examples_from_csv_bytes(data, per_action_limit=max_per_action)
+        except ValueError as exc:
+            await interaction.followup.send(embed=warning_embed(str(exc)), ephemeral=True)
+            return
+        except Exception:
+            await interaction.followup.send(embed=warning_embed("I could not read that CSV export."), ephemeral=True)
+            return
+
+        saved = self.db.add_classifier_examples(interaction.guild_id, examples)
+        lines = [
+            f"Saved `{saved}` examples from `{file.filename}`.",
+            f"Entry `{stats.get('entry', 0)}`  Trim `{stats.get('trim', 0)}`  Exit `{stats.get('exit', 0)}`  Stop `{stats.get('stop', 0)}`  Ignore `{stats.get('ignore', 0)}`",
+            f"Scanned `{stats.get('rows', 0)}` rows.",
+        ]
+        await interaction.followup.send(embed=success_embed("\n".join(lines)), ephemeral=True)
+
+    @app_commands.command(name="admin_remove_example", description="Remove one classifier example by ID.")
+    @admin_only()
+    async def admin_remove_example(self, interaction: discord.Interaction, example_id: int) -> None:
+        if not interaction.guild_id:
+            await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
+            return
+
+        removed = self.db.delete_classifier_example(interaction.guild_id, example_id)
+        embed = success_embed(f"Removed example #{example_id}.") if removed else warning_embed("I could not find that example.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="admin_clear_positions", description="Clear all tracked open positions for an analyst.")
     @admin_only()

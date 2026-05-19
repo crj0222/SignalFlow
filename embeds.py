@@ -82,7 +82,7 @@ def help_embed() -> discord.Embed:
     )
     embed.add_field(
         name="Admins",
-        value="Use `/admin_add_analyst`, `/admin_set_channel`, `/admin_list_analysts`, and position cleanup commands to manage routing.",
+        value="Use `/admin_add_analyst`, `/admin_set_channel`, `/admin_list_analysts`, and `/admin_add_example` to manage routing.",
         inline=False,
     )
     embed.set_footer(text=FOOTER)

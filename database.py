@@ -108,6 +108,15 @@ class Database:
                     FOREIGN KEY(alert_id) REFERENCES alert_logs(id) ON DELETE CASCADE,
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS classifier_examples (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    example_text TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+                );
                 """
             )
             self._ensure_column(conn, "analysts", "discord_user_id", "INTEGER")
@@ -383,6 +392,60 @@ class Database:
                 (guild_id, analyst_id),
             ).fetchall()
         return [int(row["user_id"]) for row in rows]
+
+    def add_classifier_example(self, guild_id: int, action: str, example_text: str) -> int:
+        self.ensure_guild(guild_id)
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO classifier_examples (guild_id, action, example_text)
+                VALUES (?, ?, ?)
+                """,
+                (guild_id, action, example_text.strip()),
+            )
+            return int(cur.lastrowid)
+
+    def add_classifier_examples(self, guild_id: int, examples: dict[str, list[str]]) -> int:
+        self.ensure_guild(guild_id)
+        rows = [
+            (guild_id, action, example_text.strip())
+            for action, texts in examples.items()
+            for example_text in texts
+            if example_text and example_text.strip()
+        ]
+        if not rows:
+            return 0
+
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO classifier_examples (guild_id, action, example_text)
+                VALUES (?, ?, ?)
+                """,
+                rows,
+            )
+        return len(rows)
+
+    def list_classifier_examples(self, guild_id: int, limit: int = 60) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT id, action, example_text, created_at
+                FROM classifier_examples
+                WHERE guild_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (guild_id, limit),
+            ).fetchall()
+
+    def delete_classifier_example(self, guild_id: int, example_id: int) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM classifier_examples WHERE guild_id = ? AND id = ?",
+                (guild_id, example_id),
+            )
+            return cur.rowcount > 0
 
     def log_alert(
         self,

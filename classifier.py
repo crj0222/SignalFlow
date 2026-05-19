@@ -3,7 +3,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from models import ParsedAlert
 from parser import normalize_contract, parse_alert, parse_price, parse_trade_note
@@ -14,6 +14,7 @@ AI_ENABLED = os.getenv("USE_AI_CLASSIFIER", "true").lower() in {"1", "true", "ye
 CLASSIFIER_TIMEOUT = float(os.getenv("OPENAI_CLASSIFIER_TIMEOUT_SECONDS", "8"))
 log = logging.getLogger("signalflow.classifier")
 _client = None
+MAX_EXAMPLES_PER_ACTION = 6
 
 
 LOCAL_CONFIDENCE_WORDS = (
@@ -110,7 +111,7 @@ If a message starts with a style label like "Day Trade:", "Lotto:", "Swing:", or
 Role pings and author tags like "@Waxui Alerts", "@Are Ping", and "@Scott Alerts" are not tickers.
 Important: a terse message with ticker + option contract + price, like "SPX 7385C - 3.5", is an entry unless it says watching/possible/maybe/idea/looking for/not in.
 Trade ideas, setups, watchlists, "looking for", "watching", "eyeing", "on radar", "potential", "possible", "waiting for", "love the contract", "will alert entry", "if/over/under trigger" are ignore unless the message clearly says the analyst entered, bought, took, grabbed, filled, sold, trimmed, exited, or stopped right now.
-Common current-entry words include BTO, STO, bought, buying, entered, entering, taking, took, grabbed, filled, added, adding, opening, starter, long. Common trim/exit words include trim, trimmed, scale out, sold, STC, all out, closing, exited, reduced risk, down to runners, take a trim, take profits. Common stop words include stopped out, stop hit, cut here, invalidated.
+Common current-entry words include BTO, STO, bought, buying, entered, entering, taking, took, grabbed, filled, added, adding, opening, starter, long. Common trim/exit words include trim, trimmed, scale out, sold, STC, all out, closing, exited, reduced risk, down to runners, down to 1/3 position, take a trim, take profits. Common stop words include stopped out, stop hit, cut here, invalidated.
 Formats seen in real analyst feeds:
 - "@Waxui Alerts *High Risk* | SPY here | 03/10 677P | Avg, 2.25" is an entry.
 - "OPEN $NAVN $20 call 6/18 @ 1.80 (swing, half sized for now)" is an entry.
@@ -118,6 +119,7 @@ Formats seen in real analyst feeds:
 - "Closed SPY here" is an exit.
 - "Stopped out of SPX" is a stop.
 - "+20% here on $SOFI calls, take a trim" is a trim.
+- "down to 1/3 position MSFT @1.4" is a trim, not an entry.
 - "Looking to enter near open ... BTO 4/2 $200c" is ignore if no actual fill/entry price is given.
 """.strip()
 
@@ -218,6 +220,43 @@ def today_expiration() -> str:
     return f"{now.month}/{now.day}"
 
 
+def _example_value(example: Any, key: str) -> Any:
+    try:
+        return example[key]
+    except (KeyError, TypeError):
+        return getattr(example, key, None)
+
+
+def _format_examples(examples: Optional[Iterable[Any]]) -> str:
+    if not examples:
+        return ""
+
+    grouped: dict[str, list[str]] = {action: [] for action in ("entry", "trim", "exit", "stop", "ignore")}
+    for example in examples:
+        action = str(_example_value(example, "action") or "").lower().strip()
+        text = str(_example_value(example, "example_text") or "").strip()
+        if action not in grouped or not text:
+            continue
+        if len(grouped[action]) >= MAX_EXAMPLES_PER_ACTION:
+            continue
+        text = " ".join(text.split())
+        if len(text) > 260:
+            text = f"{text[:257]}..."
+        grouped[action].append(text)
+
+    lines = []
+    for action, texts in grouped.items():
+        for text in texts:
+            lines.append(f'- "{text}" -> {action}')
+    if not lines:
+        return ""
+
+    return (
+        "\n\nServer-specific examples. Treat these as the strongest guide for this server's wording:\n"
+        + "\n".join(lines)
+    )
+
+
 def _parsed_from_payload(content: str, payload: dict[str, Any]) -> Optional[ParsedAlert]:
     action = str(payload.get("action", "ignore")).lower().strip()
     if action == "ignore":
@@ -256,9 +295,10 @@ def _coerce_trade_note(value: Any, content: str) -> str:
     return note
 
 
-async def _classify_with_openai(content: str) -> Optional[ParsedAlert]:
+async def _classify_with_openai(content: str, examples: Optional[Iterable[Any]] = None) -> Optional[ParsedAlert]:
     client = _get_client()
     current_expiration = today_expiration()
+    examples_prompt = _format_examples(examples)
     response = await client.chat.completions.create(
         model=CLASSIFIER_MODEL,
         response_format={"type": "json_object"},
@@ -267,7 +307,10 @@ async def _classify_with_openai(content: str) -> Optional[ParsedAlert]:
         messages=[
             {
                 "role": "system",
-                "content": f"{SYSTEM_PROMPT}\nIf no expiration is explicitly listed, use today's date: {current_expiration}.",
+                "content": (
+                    f"{SYSTEM_PROMPT}{examples_prompt}\n"
+                    f"If no expiration is explicitly listed, use today's date: {current_expiration}."
+                ),
             },
             {"role": "user", "content": content},
         ],
@@ -276,14 +319,14 @@ async def _classify_with_openai(content: str) -> Optional[ParsedAlert]:
     return _parsed_from_payload(content, payload)
 
 
-async def classify_alert(content: str) -> Optional[ParsedAlert]:
+async def classify_alert(content: str, examples: Optional[Iterable[Any]] = None) -> Optional[ParsedAlert]:
     """Use AI for alert-shaped messages; keep local parser as fallback."""
     if _should_skip_ai(content):
         return _sanitize(parse_alert(content), content)
 
     if AI_ENABLED and os.getenv("OPENAI_API_KEY", "").strip():
         try:
-            parsed = await _classify_with_openai(content)
+            parsed = await _classify_with_openai(content, examples)
             return _sanitize(parsed, content)
         except Exception as exc:
             # Keep the bot running if the AI provider is unavailable.

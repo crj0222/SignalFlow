@@ -140,6 +140,10 @@ PRICE_PATTERNS = (
     re.compile(r"\$((?:\d+)?\.\d{1,2})", re.IGNORECASE),
 )
 EXIT_RANGE_RE = re.compile(r"(?<![\d/])((?:\d+)?\.\d{1,2})\s*[-\u2013\u2014]\s*((?:\d+)?\.\d{1,2})(?![\d/])")
+REDUCTION_TRIM_RE = re.compile(
+    r"\b(?:DOWN TO|REDUCED TO|CUT TO)\s+(?:\d+/\d+|\d{1,3}%|RUNNERS?|A RUNNER)\s+(?:POS(?:ITION)?|SIZE|RUNNERS?)?\b",
+    re.IGNORECASE,
+)
 GAIN_PERCENT_RE = re.compile(r"([+-]?\d{1,4}(?:\.\d+)?)\s*%")
 MONTHS = {
     "JAN": 1,
@@ -196,6 +200,7 @@ COMMON_NON_TICKERS = {
     "CUT",
     "DAY",
     "DEMON",
+    "DOWN",
     "DMA",
     "ENTER",
     "ENTERED",
@@ -449,7 +454,10 @@ def _has_strong_entry(text: str, has_clean_trade_details: bool) -> bool:
 
 
 def _looks_like_runner_trim(text: str) -> bool:
-    return bool(EXIT_RANGE_RE.search(text) and re.search(r"\b(HOLDING|RUNNER|RUNNERS|MOST|MAJORITY|REDUCED RISK)\b", text))
+    return bool(
+        REDUCTION_TRIM_RE.search(text)
+        or (EXIT_RANGE_RE.search(text) and re.search(r"\b(HOLDING|RUNNER|RUNNERS|MOST|MAJORITY|REDUCED RISK)\b", text))
+    )
 
 
 def parse_alert(content: str) -> Optional[ParsedAlert]:
