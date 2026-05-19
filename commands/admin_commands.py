@@ -17,7 +17,7 @@ def analyst_label(analyst_id: int | None, name: str) -> str:
     return f"<@{analyst_id}> ({name})" if analyst_id else name
 
 
-def admin_only() -> app_commands.Check:
+def admin_only():
     async def predicate(interaction: discord.Interaction) -> bool:
         perms = interaction.user.guild_permissions if isinstance(interaction.user, discord.Member) else None
         return bool(perms and perms.manage_guild)
