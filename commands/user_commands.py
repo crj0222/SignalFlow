@@ -143,7 +143,7 @@ class UserCommands(commands.Cog):
 
         await interaction.response.send_message(
             embed=list_embed(
-                f"{analyst_row.name} Current Positions",
+                f"{_clean_name(getattr(analyst, 'display_name', None) or analyst.global_name or analyst.name)} Current Positions",
                 lines,
                 "No open SignalFlow trades are currently tracked for this analyst.",
             ),

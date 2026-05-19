@@ -17,6 +17,23 @@ def analyst_label(analyst_id: int | None, name: str) -> str:
     return f"<@{analyst_id}> ({name})" if analyst_id else name
 
 
+def resolve_analyst(db: Database, guild_id: int, user: discord.User | discord.Member):
+    analyst = db.get_analyst_by_user_id(guild_id, user.id)
+    if analyst:
+        return analyst
+
+    names_to_try = [
+        getattr(user, "display_name", None),
+        getattr(user, "global_name", None),
+        user.name,
+    ]
+    for name in [name for name in names_to_try if name]:
+        analyst = db.get_analyst_by_name(guild_id, name)
+        if analyst:
+            return analyst
+    return None
+
+
 def admin_only():
     async def predicate(interaction: discord.Interaction) -> bool:
         perms = interaction.user.guild_permissions if isinstance(interaction.user, discord.Member) else None
@@ -51,7 +68,10 @@ class AdminCommands(commands.Cog):
             await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
             return
 
+        analyst_row = resolve_analyst(self.db, interaction.guild_id, analyst)
         removed = self.db.remove_analyst_user(interaction.guild_id, analyst.id)
+        if not removed and analyst_row:
+            removed = self.db.remove_analyst(interaction.guild_id, analyst_row.name)
         embed = success_embed(f"Removed {analyst.mention}.") if removed else warning_embed("I could not find that analyst.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -62,7 +82,7 @@ class AdminCommands(commands.Cog):
             await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
             return
 
-        analyst_row = self.db.get_analyst_by_user_id(interaction.guild_id, analyst.id)
+        analyst_row = resolve_analyst(self.db, interaction.guild_id, analyst)
         if not analyst_row:
             await interaction.response.send_message(embed=warning_embed("Add that analyst first with `/admin_add_analyst` and their @ mention."), ephemeral=True)
             return
@@ -103,6 +123,54 @@ class AdminCommands(commands.Cog):
         self.db.set_review_channel(interaction.guild_id, channel.id)
         await interaction.response.send_message(embed=success_embed(f"Review channel set to {channel.mention}."), ephemeral=True)
 
+    @app_commands.command(name="admin_clear_positions", description="Clear all tracked open positions for an analyst.")
+    @admin_only()
+    async def admin_clear_positions(self, interaction: discord.Interaction, analyst: discord.User) -> None:
+        if not interaction.guild_id:
+            await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
+            return
+
+        analyst_row = resolve_analyst(self.db, interaction.guild_id, analyst)
+        if not analyst_row:
+            await interaction.response.send_message(embed=warning_embed("I could not find that analyst."), ephemeral=True)
+            return
+
+        count = self.db.close_all_entry_alerts(interaction.guild_id, analyst_row.id)
+        await interaction.response.send_message(
+            embed=success_embed(f"Cleared {count} open tracked position(s) for **{analyst_row.name}**."),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="admin_close_position", description="Close one tracked analyst position by ticker and optional contract.")
+    @admin_only()
+    async def admin_close_position(
+        self,
+        interaction: discord.Interaction,
+        analyst: discord.User,
+        ticker: str,
+        contract: str | None = None,
+    ) -> None:
+        if not interaction.guild_id:
+            await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
+            return
+
+        analyst_row = resolve_analyst(self.db, interaction.guild_id, analyst)
+        if not analyst_row:
+            await interaction.response.send_message(embed=warning_embed("I could not find that analyst."), ephemeral=True)
+            return
+
+        normalized_contract = contract.upper().replace(" ", "") if contract else None
+        count = self.db.close_matching_entry_alerts(
+            interaction.guild_id,
+            analyst_row.id,
+            ticker.upper(),
+            normalized_contract,
+        )
+        await interaction.response.send_message(
+            embed=success_embed(f"Closed {count} tracked position(s) for **{analyst_row.name}**."),
+            ephemeral=True,
+        )
+
     @app_commands.command(name="admin_test_alert", description="Send a fake alert through SignalFlow.")
     @admin_only()
     async def admin_test_alert(
@@ -119,7 +187,7 @@ class AdminCommands(commands.Cog):
             await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
             return
 
-        analyst_row = self.db.get_analyst_by_user_id(interaction.guild_id, analyst.id)
+        analyst_row = resolve_analyst(self.db, interaction.guild_id, analyst)
         if not analyst_row:
             await interaction.response.send_message(embed=warning_embed("Add that analyst first with `/admin_add_analyst` and their @ mention."), ephemeral=True)
             return
