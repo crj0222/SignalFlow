@@ -146,15 +146,6 @@ def _should_skip_ai(content: str) -> bool:
     return not (has_contract or (has_ticker and has_decimal) or has_actionish)
 
 
-def _local_is_confident(content: str, parsed: ParsedAlert) -> bool:
-    upper = content.upper()
-    if parsed.action == "entry":
-        has_terse_full_details = bool(parsed.ticker and parsed.contract and parsed.price is not None)
-        has_clear_entry_word = any(_has_phrase(upper, word) for word in LOCAL_CONFIDENCE_WORDS)
-        return has_terse_full_details or has_clear_entry_word
-    return bool(parsed.ticker or parsed.contract)
-
-
 def _get_client():
     global _client
     if _client is None:
@@ -233,13 +224,9 @@ async def _classify_with_openai(content: str) -> Optional[ParsedAlert]:
 
 
 async def classify_alert(content: str) -> Optional[ParsedAlert]:
-    """Prefer cheap local checks; use AI only for ambiguous alert-shaped messages."""
-    local_parsed = _sanitize(parse_alert(content), content)
-    if local_parsed and _local_is_confident(content, local_parsed):
-        return local_parsed
-
+    """Use AI for alert-shaped messages; keep local parser as fallback."""
     if _should_skip_ai(content):
-        return local_parsed
+        return _sanitize(parse_alert(content), content)
 
     if AI_ENABLED and os.getenv("OPENAI_API_KEY"):
         try:
@@ -248,6 +235,6 @@ async def classify_alert(content: str) -> Optional[ParsedAlert]:
         except Exception as exc:
             # Keep the bot running if the AI provider is unavailable.
             log.warning("AI classification unavailable; using local parser fallback. Reason: %s", exc)
-            return local_parsed
+            return _sanitize(parse_alert(content), content)
 
-    return local_parsed
+    return _sanitize(parse_alert(content), content)
