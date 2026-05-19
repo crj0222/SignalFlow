@@ -3,7 +3,16 @@ import io
 import re
 from collections import OrderedDict
 
-VALID_EXAMPLE_ACTIONS = ("entry", "trim", "close", "ignore")
+VALID_EXAMPLE_ACTIONS = (
+    "entry",
+    "add",
+    "average_down",
+    "average_up",
+    "trim",
+    "close",
+    "roll_option",
+    "ignore",
+)
 
 IGNORE_PATTERNS = (
     r"\b(past\s+\d+\s+weeks?\s+recap|recap|best of|results)\b",
@@ -98,7 +107,7 @@ def _content_column(fieldnames: list[str] | None) -> str | None:
     if not fieldnames:
         return None
     for name in fieldnames:
-        if name.lower().strip() == "content":
+        if name.lower().strip() in {"content", "text", "example_text", "message"}:
             return name
     return None
 
@@ -109,14 +118,21 @@ def _add_example(examples: dict[str, OrderedDict[str, None]], action: str, text:
     examples[action].setdefault(text, None)
 
 
-def examples_from_csv_bytes(data: bytes, per_action_limit: int = 30) -> tuple[dict[str, list[str]], dict[str, int]]:
-    """Extract high-confidence classifier examples from a Discord CSV export."""
-    per_action_limit = max(1, min(per_action_limit, 100))
+def examples_from_csv_bytes(
+    data: bytes,
+    per_action_limit: int = 30,
+    fixed_action: str | None = None,
+) -> tuple[dict[str, list[str]], dict[str, int]]:
+    """Extract classifier examples from a Discord or curated CSV export."""
+    per_action_limit = max(1, min(per_action_limit, 500))
+    if fixed_action and fixed_action not in VALID_EXAMPLE_ACTIONS:
+        raise ValueError("Invalid example action.")
+
     text = data.decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
     content_column = _content_column(reader.fieldnames)
     if not content_column:
-        raise ValueError("CSV must include a Content column.")
+        raise ValueError("CSV must include a Content, text, example_text, or message column.")
 
     examples: dict[str, OrderedDict[str, None]] = {action: OrderedDict() for action in VALID_EXAMPLE_ACTIONS}
     stats = {"rows": 0, "blank": 0, "skipped": 0, "saved": 0}
@@ -131,7 +147,7 @@ def examples_from_csv_bytes(data: bytes, per_action_limit: int = 30) -> tuple[di
             stats["skipped"] += 1
             continue
 
-        action = _classify_csv_example(clean)
+        action = fixed_action or _classify_csv_example(clean)
         if action:
             _add_example(examples, action, clean, per_action_limit)
             continue

@@ -186,17 +186,31 @@ class AdminCommands(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(name="admin_import_examples_csv", description="Import classifier examples from a Discord CSV export.")
+    @app_commands.command(name="admin_import_examples_csv", description="Import classifier examples from a labeled CSV.")
     @app_commands.describe(
+        action="Classification to apply to every row in this CSV.",
         file="Discord export CSV with a Content column.",
-        max_per_action="Maximum examples to save per action from this file.",
+        max_per_action="Maximum examples to save from this file.",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="Entry", value="entry"),
+            app_commands.Choice(name="Add", value="add"),
+            app_commands.Choice(name="Average Down", value="average_down"),
+            app_commands.Choice(name="Average Up", value="average_up"),
+            app_commands.Choice(name="Trim", value="trim"),
+            app_commands.Choice(name="Close", value="close"),
+            app_commands.Choice(name="Roll Option", value="roll_option"),
+            app_commands.Choice(name="Ignore", value="ignore"),
+        ]
     )
     @admin_only()
     async def admin_import_examples_csv(
         self,
         interaction: discord.Interaction,
+        action: app_commands.Choice[str],
         file: discord.Attachment,
-        max_per_action: int = 30,
+        max_per_action: int = 100,
     ) -> None:
         if not interaction.guild_id:
             await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
@@ -211,7 +225,7 @@ class AdminCommands(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         try:
             data = await file.read()
-            examples, stats = examples_from_csv_bytes(data, per_action_limit=max_per_action)
+            examples, stats = examples_from_csv_bytes(data, per_action_limit=max_per_action, fixed_action=action.value)
         except ValueError as exc:
             await interaction.followup.send(embed=warning_embed(str(exc)), ephemeral=True)
             return
@@ -221,8 +235,7 @@ class AdminCommands(commands.Cog):
 
         saved = self.db.add_classifier_examples(interaction.guild_id, examples)
         lines = [
-            f"Saved `{saved}` examples from `{file.filename}`.",
-            f"Entry `{stats.get('entry', 0)}`  Trim `{stats.get('trim', 0)}`  Close `{stats.get('close', 0)}`  Ignore `{stats.get('ignore', 0)}`",
+            f"Saved `{saved}` `{action.value}` examples from `{file.filename}`.",
             f"Scanned `{stats.get('rows', 0)}` rows.",
         ]
         await interaction.followup.send(embed=success_embed("\n".join(lines)), ephemeral=True)
