@@ -162,6 +162,28 @@ class Database:
                     "UPDATE analysts SET name = ?, discord_user_id = ?, is_active = 1 WHERE id = ?",
                     (display_name.strip(), discord_user_id, existing["id"]),
                 )
+                conn.execute(
+                    """
+                    UPDATE analysts
+                    SET is_active = 0
+                    WHERE guild_id = ?
+                    AND id != ?
+                    AND (
+                        lower(name) = lower(?)
+                        OR discord_user_id = ?
+                        OR name = ?
+                        OR name = ?
+                    )
+                    """,
+                    (
+                        guild_id,
+                        existing["id"],
+                        display_name.strip(),
+                        discord_user_id,
+                        str(discord_user_id),
+                        f"<@{discord_user_id}>",
+                    ),
+                )
                 return
 
             conn.execute(
@@ -174,6 +196,33 @@ class Database:
                 """,
                 (guild_id, display_name.strip(), discord_user_id),
             )
+            new_row = conn.execute(
+                "SELECT id FROM analysts WHERE guild_id = ? AND discord_user_id = ? AND is_active = 1",
+                (guild_id, discord_user_id),
+            ).fetchone()
+            if new_row:
+                conn.execute(
+                    """
+                    UPDATE analysts
+                    SET is_active = 0
+                    WHERE guild_id = ?
+                    AND id != ?
+                    AND (
+                        lower(name) = lower(?)
+                        OR discord_user_id = ?
+                        OR name = ?
+                        OR name = ?
+                    )
+                    """,
+                    (
+                        guild_id,
+                        new_row["id"],
+                        display_name.strip(),
+                        discord_user_id,
+                        str(discord_user_id),
+                        f"<@{discord_user_id}>",
+                    ),
+                )
 
     def remove_analyst(self, guild_id: int, name: str) -> bool:
         with self.connect() as conn:
@@ -205,8 +254,23 @@ class Database:
     def get_analyst_by_user_id(self, guild_id: int, discord_user_id: int) -> Optional[Analyst]:
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT * FROM analysts WHERE guild_id = ? AND discord_user_id = ? AND is_active = 1",
-                (guild_id, discord_user_id),
+                """
+                SELECT * FROM analysts
+                WHERE guild_id = ? AND is_active = 1
+                AND (
+                    discord_user_id = ?
+                    OR name = ?
+                    OR name = ?
+                    OR name = ?
+                )
+                """,
+                (
+                    guild_id,
+                    discord_user_id,
+                    str(discord_user_id),
+                    f"<@{discord_user_id}>",
+                    f"<@!{discord_user_id}>",
+                ),
             ).fetchone()
         return self._row_to_analyst(row) if row else None
 
