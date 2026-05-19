@@ -138,11 +138,11 @@ class SignalFlowBot(commands.Bot):
         missing_trade_details = not (parsed.ticker or parsed.contract)
         analyst_entry = None
         closes_analyst_trade = parsed.action in {"stop", "exit"}
-        if closes_analyst_trade:
+        if missing_trade_details or closes_analyst_trade:
             lookup_ticker = parsed.ticker if not missing_trade_details else None
             lookup_contract = parsed.contract if not missing_trade_details else None
             analyst_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, lookup_ticker, lookup_contract)
-            if not analyst_entry:
+            if closes_analyst_trade and not analyst_entry:
                 return 0
 
         for user_id in self.db.subscribed_users(guild.id, analyst.id):
@@ -159,7 +159,7 @@ class SignalFlowBot(commands.Bot):
 
             position = positions[0]
             view = None if closes_analyst_trade else ExitAlertView(self.db, guild.id, position["id"], alert_id)
-            if closes_analyst_trade and analyst_entry:
+            if analyst_entry:
                 display_parsed = self._entry_to_display_alert(parsed, analyst_entry)
             else:
                 display_parsed = replace(
