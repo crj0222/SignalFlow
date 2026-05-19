@@ -152,7 +152,8 @@ def _get_client():
     if _client is None:
         from openai import AsyncOpenAI
 
-        _client = AsyncOpenAI(max_retries=0, timeout=CLASSIFIER_TIMEOUT)
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        _client = AsyncOpenAI(api_key=api_key, max_retries=0, timeout=CLASSIFIER_TIMEOUT)
     return _client
 
 
@@ -229,7 +230,7 @@ async def classify_alert(content: str) -> Optional[ParsedAlert]:
     if _should_skip_ai(content):
         return _sanitize(parse_alert(content), content)
 
-    if AI_ENABLED and os.getenv("OPENAI_API_KEY"):
+    if AI_ENABLED and os.getenv("OPENAI_API_KEY", "").strip():
         try:
             parsed = await _classify_with_openai(content)
             return _sanitize(parsed, content)
