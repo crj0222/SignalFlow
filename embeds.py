@@ -33,6 +33,10 @@ def _trade_line(parsed: ParsedAlert) -> str:
     return trade
 
 
+def _price_line(parsed: ParsedAlert) -> str:
+    return f"${parsed.price:.2f}" if parsed.price is not None else "Not detected"
+
+
 def start_embed() -> discord.Embed:
     embed = discord.Embed(
         title="SignalFlow",
@@ -49,19 +53,42 @@ def start_embed() -> discord.Embed:
     return embed
 
 
-def entry_alert_embed(analyst: Analyst, parsed: ParsedAlert) -> discord.Embed:
-    side = _option_side(parsed.contract)
+def help_embed() -> discord.Embed:
     embed = discord.Embed(
-        title=f"🚨 {side} Entry",
-        description=f"**{_trade_line(parsed)}**",
+        title="SignalFlow Help",
+        description="Use SignalFlow to choose analyst alerts, track entries you actually take, and receive matching trim/stop updates.",
         color=BRAND_COLOR,
     )
-    embed.add_field(name="Analyst", value=analyst.name, inline=False)
-    embed.add_field(name="Ticker", value=_value(parsed.ticker), inline=True)
+    embed.add_field(
+        name="User commands",
+        value="`/select_analysts`\n`/my_alerts`\n`/pause_alerts`\n`/resume_alerts`",
+        inline=True,
+    )
+    embed.add_field(
+        name="Alert buttons",
+        value="`Took Trade` starts follow-up tracking.\n`Close Position` stops alerts for that trade.",
+        inline=True,
+    )
+    embed.add_field(
+        name="Admins",
+        value="Use `/admin_add_analyst`, `/admin_set_channel`, and `/admin_list_analysts` to set up routing.",
+        inline=False,
+    )
+    embed.set_footer(text=FOOTER)
+    return embed
+
+
+def entry_alert_embed(analyst: Analyst, parsed: ParsedAlert) -> discord.Embed:
+    side = _option_side(parsed.contract)
+    style = _value(parsed.trade_note)
+    embed = discord.Embed(
+        title=f"🚨 {side} Entry",
+        description=f"**{_trade_line(parsed)}**\n{style}",
+        color=BRAND_COLOR,
+    )
+    embed.add_field(name="Entry", value=_price_line(parsed), inline=True)
     embed.add_field(name="Expiration", value=_value(parsed.expiration), inline=True)
-    embed.add_field(name="Strike", value=_value(parsed.contract), inline=True)
-    embed.add_field(name="Entry", value=f"${parsed.price:.2f}" if parsed.price is not None else "Not detected", inline=True)
-    embed.add_field(name="Style", value=_value(parsed.trade_note), inline=True)
+    embed.add_field(name="Analyst", value=analyst.name, inline=True)
     embed.set_footer(text=FOOTER)
     return embed
 

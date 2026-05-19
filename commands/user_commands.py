@@ -5,7 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from database import Database
-from embeds import list_embed, start_embed, success_embed
+from embeds import help_embed, list_embed, start_embed, success_embed
 from models import Analyst
 from views import AnalystSelectView, build_analyst_picker_embed
 
@@ -63,6 +63,10 @@ class UserCommands(commands.Cog):
     @app_commands.command(name="start", description="Learn what SignalFlow does.")
     async def start(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(embed=start_embed(), ephemeral=True)
+
+    @app_commands.command(name="help", description="Show SignalFlow commands and alert controls.")
+    async def help(self, interaction: discord.Interaction) -> None:
+        await interaction.response.send_message(embed=help_embed(), ephemeral=True)
 
     @app_commands.command(name="select_analysts", description="Choose which analysts can DM you alerts.")
     async def select_analysts(self, interaction: discord.Interaction) -> None:
