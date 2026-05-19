@@ -357,6 +357,18 @@ class Database:
                 (guild_id, analyst_id, ticker, ticker, contract, contract),
             ).fetchone()
 
+    def list_open_entry_alerts(self, guild_id: int, analyst_id: int) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT * FROM alert_logs
+                WHERE guild_id = ? AND analyst_id = ? AND action = 'entry'
+                AND COALESCE(status, 'open') = 'open'
+                ORDER BY created_at DESC, id DESC
+                """,
+                (guild_id, analyst_id),
+            ).fetchall()
+
     def close_entry_alert(self, alert_id: int) -> None:
         with self.connect() as conn:
             conn.execute(

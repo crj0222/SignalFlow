@@ -5,7 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from database import Database
-from embeds import help_embed, list_embed, start_embed, success_embed
+from embeds import help_embed, list_embed, start_embed, success_embed, warning_embed
 from models import Analyst
 from views import AnalystSelectView, build_analyst_picker_embed
 
@@ -97,6 +97,37 @@ class UserCommands(commands.Cog):
         lines = [f"- {analyst.name}" for analyst in analysts]
         await interaction.response.send_message(
             embed=list_embed("My Alerts", lines, "You are not following any analysts yet. Use `/select_analysts`."),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="current_positions", description="Show an analyst's currently open SignalFlow trades.")
+    async def current_positions(self, interaction: discord.Interaction, analyst: discord.User) -> None:
+        if not interaction.guild_id:
+            await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
+            return
+
+        analyst_row = self.db.get_analyst_by_user_id(interaction.guild_id, analyst.id)
+        if not analyst_row:
+            await interaction.response.send_message(
+                embed=warning_embed("That analyst is not configured in this server."),
+                ephemeral=True,
+            )
+            return
+
+        positions = self.db.list_open_entry_alerts(interaction.guild_id, analyst_row.id)
+        lines = []
+        for pos in positions:
+            trade = " ".join(part for part in [pos["ticker"], pos["expiration"], pos["contract"]] if part)
+            price = f" @{pos['price']:g}" if pos["price"] is not None else ""
+            note = f" - {pos['trade_note']}" if pos["trade_note"] else ""
+            lines.append(f"- **{trade or 'Details not detected'}{price}**{note}")
+
+        await interaction.response.send_message(
+            embed=list_embed(
+                f"{analyst_row.name} Current Positions",
+                lines,
+                "No open SignalFlow trades are currently tracked for this analyst.",
+            ),
             ephemeral=True,
         )
 

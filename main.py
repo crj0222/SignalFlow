@@ -110,7 +110,8 @@ class SignalFlowBot(commands.Bot):
         routed = 0
         missing_trade_details = not (parsed.ticker or parsed.contract)
         analyst_entry = None
-        if parsed.action == "stop":
+        closes_analyst_trade = parsed.action in {"stop", "exit"}
+        if closes_analyst_trade:
             analyst_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, parsed.contract)
             if not analyst_entry:
                 return 0
@@ -128,7 +129,7 @@ class SignalFlowBot(commands.Bot):
                 continue
 
             position = positions[0]
-            view = None if parsed.action == "stop" else ExitAlertView(self.db, guild.id, position["id"], alert_id)
+            view = None if closes_analyst_trade else ExitAlertView(self.db, guild.id, position["id"], alert_id)
             display_parsed = replace(
                 parsed,
                 ticker=parsed.ticker or position["ticker"] or (analyst_entry["ticker"] if analyst_entry else None),
@@ -146,14 +147,14 @@ class SignalFlowBot(commands.Bot):
                     embed=exit_alert_embed(analyst, display_parsed, possible=False, gain_pct=gain_pct),
                     view=view,
                 )
-                if parsed.action == "stop":
+                if closes_analyst_trade:
                     self.db.close_position(position["id"], user_id)
                 routed += 1
             except discord.Forbidden:
                 log.warning("Cannot DM user %s; DMs may be closed", user_id)
             except discord.HTTPException:
                 log.exception("Failed to DM trim/exit alert to user %s", user_id)
-        if parsed.action == "stop" and analyst_entry:
+        if closes_analyst_trade and analyst_entry:
             self.db.close_entry_alert(analyst_entry["id"])
         return routed
 

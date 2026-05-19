@@ -72,7 +72,7 @@ def help_embed() -> discord.Embed:
     )
     embed.add_field(
         name="User commands",
-        value="`/select_analysts`\n`/my_alerts`\n`/pause_alerts`\n`/resume_alerts`",
+        value="`/select_analysts`\n`/my_alerts`\n`/current_positions`\n`/pause_alerts`\n`/resume_alerts`",
         inline=True,
     )
     embed.add_field(
