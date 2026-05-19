@@ -77,6 +77,7 @@ trade_note should be "Half Size", "Light", "Lotto", "Swing", "Day Trade", a slas
 entry=taking/filled/bought/opening now. trim=partial scale out. exit=closing/selling. stop=stopped out/stop loss hit/cut at stop. ignore=watchlist/idea/maybe/recap/uncertain.
 Extract ticker, option contract like 530C, expiration like 5/24, and price. Do not invent missing details. If trim/exit/stop lacks ticker or contract, confidence="possible".
 Price means the option fill/entry/trim/exit price, such as "@ 1.20", "at .95", "paid 1.35", "avg 1.10", "filled 2.40", "Entry: 4.20-4.30", or a decimal right after the contract. For ranges, use the first number.
+If a message starts with a style label like "Day Trade:", "Lotto:", "Swing:", or "Light:", that label is not the ticker. The ticker is the symbol next to the contract, e.g. "Day Trade: SPY 770c May 29 @.36" has ticker SPY.
 Important: a terse message with ticker + option contract + price, like "SPX 7385C - 3.5", is an entry unless it says watching/possible/maybe/idea/looking for/not in.
 Trade ideas, setups, watchlists, "looking for", "love the contract", "will alert entry", "if/over/under trigger" are ignore unless the message clearly says the analyst entered, bought, took, grabbed, filled, sold, trimmed, exited, or stopped right now.
 """.strip()
@@ -234,7 +235,12 @@ async def classify_alert(content: str) -> Optional[ParsedAlert]:
             return _sanitize(parsed, content)
         except Exception as exc:
             # Keep the bot running if the AI provider is unavailable.
-            log.warning("AI classification unavailable; using local parser fallback. Reason: %s", exc)
+            log.warning(
+                "AI classification unavailable; using local parser fallback. Error=%s Reason=%r",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
             return _sanitize(parse_alert(content), content)
 
     return _sanitize(parse_alert(content), content)

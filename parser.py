@@ -11,9 +11,13 @@ STOP_WORDS = ("STOP", "STOPPED", "STOPPED OUT", "STOP LOSS", "SL HIT", "STOP HIT
 SOFT_IGNORE_WORDS = ("WATCHING", "POSSIBLE", "MAYBE", "NOT IN", "LOOKING AT")
 
 TICKER_RE = re.compile(r"\b([A-Z]{1,5})\b")
-CONTRACT_RE = re.compile(r"\b(\d{1,5}(?:\.\d{1,2})?[CP])\b", re.IGNORECASE)
+CONTRACT_RE = re.compile(r"\b(\d{1,5}(?:\.\d{1,2})?\s*[CP])\b", re.IGNORECASE)
 EXPIRATION_RE = re.compile(r"\b(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b")
 PRICE_PATTERNS = (
+    re.compile(
+        r"(?:^|\n)\s*(?:ENTRY|FILL(?:ED)?|PRICE|AVG|AVERAGE)\s*:\s*\$?((?:\d+)?\.\d{1,2}|\d+)",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"(?:@|\bat\b|\bfor\b|\bpaid\b|\bpaying\b|\bavg\b|\baverage\b|\bentry\b|\bfill(?:ed)?\b|\bstarter\b|\bdebit\b|\bhere\b|\bnow\b|\bin\b|\badding\b|\badd\b)\s*\$?((?:\d+)?\.\d{1,2}|\d+)",
         re.IGNORECASE,
@@ -44,10 +48,20 @@ COMMON_NON_TICKERS = {
     "CLOSE",
     "CALL",
     "PUT",
+    "DAY",
+    "TRADE",
+    "SCALP",
+    "SCALPING",
+    "LOTTO",
+    "LIGHT",
+    "SWING",
+    "OPTION",
+    "NOTES",
     "AT",
     "FOR",
     "THE",
     "AND",
+    "I",
     "NOT",
     "IN",
 }
@@ -58,6 +72,18 @@ def _contains_any(text: str, words: tuple[str, ...]) -> bool:
 
 
 def _parse_ticker(text: str) -> Optional[str]:
+    option_line = re.search(r"\bOPTION\s*:\s*([A-Z]{1,5})\b", text, flags=re.IGNORECASE)
+    if option_line:
+        return option_line.group(1).upper()
+
+    contract_context = re.search(
+        r"\b([A-Z]{1,5})\s+\d{1,5}(?:\.\d{1,2})?\s*[CP]\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if contract_context:
+        return contract_context.group(1).upper()
+
     for match in TICKER_RE.finditer(text):
         value = match.group(1).upper()
         if value not in COMMON_NON_TICKERS and not re.fullmatch(r"\d+", value):
@@ -75,6 +101,8 @@ def parse_trade_note(text: str) -> str:
     notes = []
     if re.search(r"\b(HALF SIZE|1/2 SIZE|HALF POS(?:ITION)?)\b", upper):
         notes.append("Half Size")
+    if re.search(r"\b(LIGHT|SMALL|SMALL SIZE|STARTER)\b", upper):
+        notes.append("Light")
     if re.search(r"\b(LOTTO|LOTTERY)\b", upper):
         notes.append("Lotto")
     if re.search(r"\b(SWING|SWINGER|OVERNIGHT)\b", upper):
@@ -94,6 +122,9 @@ def parse_price(text: str, contract: Optional[str] = None) -> Optional[float]:
     # Common shorthand: "BTO SPY 530C .95" or "SPY 530C 5/24 1.20".
     if contract:
         contract_match = re.search(rf"{re.escape(contract)}s?", text, flags=re.IGNORECASE)
+        if not contract_match and len(contract) > 1:
+            spaced_contract = rf"{re.escape(contract[:-1])}\s*{re.escape(contract[-1])}"
+            contract_match = re.search(rf"{spaced_contract}s?", text, flags=re.IGNORECASE)
         if contract_match:
             nearby = text[contract_match.end() : contract_match.end() + 40]
             decimal_match = re.search(r"(?<!\d)(?:[-–—:]\s*)?((?:\d+)?\.\d{1,2}|\d+)(?!\d)", nearby)
@@ -119,7 +150,7 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
     has_soft_ignore = _contains_any(upper, SOFT_IGNORE_WORDS)
     contract_match = CONTRACT_RE.search(upper)
     expiration_match = EXPIRATION_RE.search(upper)
-    contract = contract_match.group(1).upper() if contract_match else None
+    contract = contract_match.group(1).upper().replace(" ", "") if contract_match else None
     price = parse_price(raw, contract)
     ticker = _parse_ticker(upper)
     has_clean_trade_details = bool(ticker and contract and price is not None)
@@ -140,6 +171,10 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
     confidence = "normal"
     if action in {"trim", "exit", "stop"} and not (ticker or contract_match):
         confidence = "possible"
+
+    # Avoid routing generic chat like "I entered..." when no tradable details were found.
+    if action == "entry" and not has_clean_trade_details and not (ticker and (contract or price is not None)):
+        return None
 
     return ParsedAlert(
         action=action,
