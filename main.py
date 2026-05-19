@@ -19,7 +19,7 @@ log = logging.getLogger("signalflow")
 
 
 class SignalFlowBot(commands.Bot):
-    def __init__(self, db: Database, guild_id: Optional[int]) -> None:
+    def __init__(self, db: Database, guild_id: Optional[int], clear_guild_commands: bool = False) -> None:
         intents = discord.Intents.default()
         intents.guilds = True
         intents.members = True
@@ -28,6 +28,7 @@ class SignalFlowBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.db = db
         self.guild_id = guild_id
+        self.clear_guild_commands = clear_guild_commands
 
     async def setup_hook(self) -> None:
         await user_commands.setup(self, self.db)
@@ -35,6 +36,11 @@ class SignalFlowBot(commands.Bot):
 
         if self.guild_id:
             guild = discord.Object(id=self.guild_id)
+            if self.clear_guild_commands:
+                self.tree.clear_commands(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                log.info("Cleared %s guild slash commands from %s", len(synced), self.guild_id)
+                return
             self.tree.copy_global_to(guild=guild)
             synced = await self.tree.sync(guild=guild)
             log.info("Synced %s guild slash commands to %s", len(synced), self.guild_id)
@@ -174,7 +180,7 @@ class SignalFlowBot(commands.Bot):
 def main() -> None:
     config = load_config()
     db = Database(config.database_path)
-    bot = SignalFlowBot(db=db, guild_id=config.guild_id)
+    bot = SignalFlowBot(db=db, guild_id=config.guild_id, clear_guild_commands=config.clear_guild_commands)
     bot.run(config.token)
 
 
