@@ -122,6 +122,13 @@ class EntryAlertView(discord.ui.View):
 
     @discord.ui.button(label="Took Trade", style=discord.ButtonStyle.success, custom_id="signalflow:took_trade")
     async def took_trade(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not self.db.is_alert_open(self.alert_id):
+            await interaction.response.send_message(
+                embed=warning_embed("This trade is no longer open, so it cannot be marked as taken."),
+                ephemeral=True,
+            )
+            return
+
         self.db.mark_alert_action(self.alert_id, self.guild_id, interaction.user.id, "took")
         self.db.open_position(self.guild_id, interaction.user.id, self.analyst_id, self.alert_id)
         await interaction.response.send_message(embed=success_embed("Marked as taken and added to your open positions."), ephemeral=True)

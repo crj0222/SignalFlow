@@ -89,6 +89,7 @@ class Database:
                     expiration TEXT,
                     price REAL,
                     trade_note TEXT,
+                    status TEXT NOT NULL DEFAULT 'open',
                     raw_text TEXT NOT NULL,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE,
@@ -109,6 +110,7 @@ class Database:
             )
             self._ensure_column(conn, "analysts", "discord_user_id", "INTEGER")
             self._ensure_column(conn, "alert_logs", "trade_note", "TEXT")
+            self._ensure_column(conn, "alert_logs", "status", "TEXT NOT NULL DEFAULT 'open'")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -326,6 +328,42 @@ class Database:
             )
             return int(cur.lastrowid)
 
+    def is_alert_open(self, alert_id: int) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM alert_logs WHERE id = ? AND action = 'entry'",
+                (alert_id,),
+            ).fetchone()
+        return bool(row and (row["status"] or "open") == "open")
+
+    def latest_open_entry_alert(
+        self,
+        guild_id: int,
+        analyst_id: int,
+        ticker: Optional[str] = None,
+        contract: Optional[str] = None,
+    ) -> Optional[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT * FROM alert_logs
+                WHERE guild_id = ? AND analyst_id = ? AND action = 'entry'
+                AND COALESCE(status, 'open') = 'open'
+                AND (? IS NULL OR ticker = ?)
+                AND (? IS NULL OR contract = ?)
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (guild_id, analyst_id, ticker, ticker, contract, contract),
+            ).fetchone()
+
+    def close_entry_alert(self, alert_id: int) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE alert_logs SET status = 'closed' WHERE id = ? AND action = 'entry'",
+                (alert_id,),
+            )
+
     def mark_alert_action(self, alert_id: int, guild_id: int, user_id: int, action: str) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -357,6 +395,22 @@ class Database:
                 ),
             )
             return int(cur.lastrowid)
+
+    def find_open_positions_for_entry_alert(
+        self,
+        guild_id: int,
+        user_id: int,
+        entry_alert_id: int,
+    ) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT * FROM user_positions
+                WHERE guild_id = ? AND user_id = ? AND entry_alert_id = ? AND status = 'open'
+                ORDER BY opened_at DESC
+                """,
+                (guild_id, user_id, entry_alert_id),
+            ).fetchall()
 
     def find_open_positions(
         self,
