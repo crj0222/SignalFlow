@@ -5,7 +5,7 @@ from typing import Optional
 import discord
 from discord.ext import commands
 
-from commands import admin_commands, user_commands
+from commands import admin_commands, owner_commands, user_commands
 from config import load_config
 from database import Database
 from embeds import entry_alert_embed, exit_alert_embed
@@ -19,7 +19,13 @@ log = logging.getLogger("signalflow")
 
 
 class SignalFlowBot(commands.Bot):
-    def __init__(self, db: Database, guild_id: Optional[int], clear_guild_commands: bool = False) -> None:
+    def __init__(
+        self,
+        db: Database,
+        guild_id: Optional[int],
+        owner_ids: set[int],
+        clear_guild_commands: bool = False,
+    ) -> None:
         intents = discord.Intents.default()
         intents.guilds = True
         intents.members = True
@@ -28,11 +34,13 @@ class SignalFlowBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.db = db
         self.guild_id = guild_id
+        self.owner_ids = owner_ids
         self.clear_guild_commands = clear_guild_commands
 
     async def setup_hook(self) -> None:
         await user_commands.setup(self, self.db)
         await admin_commands.setup(self, self.db)
+        await owner_commands.setup(self, self.db, self.owner_ids)
 
         if self.guild_id:
             guild = discord.Object(id=self.guild_id)
@@ -55,6 +63,8 @@ class SignalFlowBot(commands.Bot):
         if not message.guild:
             return
         if self.user and message.author.id == self.user.id:
+            return
+        if not self.db.is_guild_active(message.guild.id):
             return
 
         analyst = self.db.get_analyst_for_channel(message.guild.id, message.channel.id)
@@ -180,7 +190,12 @@ class SignalFlowBot(commands.Bot):
 def main() -> None:
     config = load_config()
     db = Database(config.database_path)
-    bot = SignalFlowBot(db=db, guild_id=config.guild_id, clear_guild_commands=config.clear_guild_commands)
+    bot = SignalFlowBot(
+        db=db,
+        guild_id=config.guild_id,
+        owner_ids=config.owner_ids,
+        clear_guild_commands=config.clear_guild_commands,
+    )
     bot.run(config.token)
 
 

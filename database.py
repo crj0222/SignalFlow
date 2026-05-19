@@ -24,6 +24,8 @@ class Database:
                 CREATE TABLE IF NOT EXISTS guilds (
                     guild_id INTEGER PRIMARY KEY,
                     review_channel_id INTEGER,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    disabled_reason TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -109,6 +111,8 @@ class Database:
                 """
             )
             self._ensure_column(conn, "analysts", "discord_user_id", "INTEGER")
+            self._ensure_column(conn, "guilds", "is_active", "INTEGER NOT NULL DEFAULT 1")
+            self._ensure_column(conn, "guilds", "disabled_reason", "TEXT")
             self._ensure_column(conn, "alert_logs", "trade_note", "TEXT")
             self._ensure_column(conn, "alert_logs", "status", "TEXT NOT NULL DEFAULT 'open'")
 
@@ -129,6 +133,26 @@ class Database:
     def ensure_guild(self, guild_id: int) -> None:
         with self.connect() as conn:
             conn.execute("INSERT OR IGNORE INTO guilds (guild_id) VALUES (?)", (guild_id,))
+
+    def is_guild_active(self, guild_id: int) -> bool:
+        self.ensure_guild(guild_id)
+        with self.connect() as conn:
+            row = conn.execute("SELECT is_active FROM guilds WHERE guild_id = ?", (guild_id,)).fetchone()
+        return bool(row and row["is_active"])
+
+    def set_guild_active(self, guild_id: int, is_active: bool, reason: Optional[str] = None) -> None:
+        self.ensure_guild(guild_id)
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE guilds SET is_active = ?, disabled_reason = ? WHERE guild_id = ?",
+                (1 if is_active else 0, None if is_active else reason, guild_id),
+            )
+
+    def list_guild_statuses(self) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute(
+                "SELECT guild_id, is_active, disabled_reason FROM guilds ORDER BY guild_id"
+            ).fetchall()
 
     def set_review_channel(self, guild_id: int, channel_id: int) -> None:
         self.ensure_guild(guild_id)
