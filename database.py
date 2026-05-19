@@ -442,6 +442,50 @@ class Database:
             ).fetchall()
         return [int(row["user_id"]) for row in rows]
 
+    def count_classifier_examples_by_action(self, guild_id: int) -> dict[str, int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT action, COUNT(*) AS count
+                FROM classifier_examples
+                WHERE guild_id = ?
+                GROUP BY action
+                """,
+                (guild_id,),
+            ).fetchall()
+        return {str(row["action"]): int(row["count"]) for row in rows}
+
+    def count_open_entry_alerts(self, guild_id: int, analyst_id: Optional[int] = None) -> int:
+        query = """
+            SELECT COUNT(*) AS count
+            FROM alert_logs
+            WHERE guild_id = ?
+            AND action IN ('entry', 'roll_option')
+            AND COALESCE(status, 'open') = 'open'
+        """
+        params: list[object] = [guild_id]
+        if analyst_id is not None:
+            query += " AND analyst_id = ?"
+            params.append(analyst_id)
+        with self.connect() as conn:
+            row = conn.execute(query, params).fetchone()
+        return int(row["count"] if row else 0)
+
+    def count_open_user_positions(self, guild_id: int, analyst_id: Optional[int] = None) -> int:
+        query = """
+            SELECT COUNT(*) AS count
+            FROM user_positions
+            WHERE guild_id = ?
+            AND status = 'open'
+        """
+        params: list[object] = [guild_id]
+        if analyst_id is not None:
+            query += " AND analyst_id = ?"
+            params.append(analyst_id)
+        with self.connect() as conn:
+            row = conn.execute(query, params).fetchone()
+        return int(row["count"] if row else 0)
+
     def add_classifier_example(self, guild_id: int, action: str, example_text: str) -> int:
         self.ensure_guild(guild_id)
         if action in {"exit", "stop"}:

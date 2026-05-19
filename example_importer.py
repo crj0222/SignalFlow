@@ -159,3 +159,35 @@ def examples_from_csv_bytes(
     for action, values in result.items():
         stats[action] = len(values)
     return result, stats
+
+
+def examples_from_txt_bytes(
+    data: bytes,
+    per_action_limit: int = 30,
+    fixed_action: str | None = None,
+) -> tuple[dict[str, list[str]], dict[str, int]]:
+    """Extract classifier examples from a plain text file, one example per line."""
+    per_action_limit = max(1, min(per_action_limit, 500))
+    if not fixed_action or fixed_action not in VALID_EXAMPLE_ACTIONS:
+        raise ValueError("Text imports require a valid action.")
+
+    text = data.decode("utf-8-sig", errors="replace")
+    examples: dict[str, OrderedDict[str, None]] = {action: OrderedDict() for action in VALID_EXAMPLE_ACTIONS}
+    stats = {"rows": 0, "blank": 0, "skipped": 0, "saved": 0}
+
+    for line in text.splitlines():
+        stats["rows"] += 1
+        clean = _clean_text(line)
+        if not clean:
+            stats["blank"] += 1
+            continue
+        if _should_skip(clean):
+            stats["skipped"] += 1
+            continue
+        _add_example(examples, fixed_action, clean, per_action_limit)
+
+    result = {action: list(values.keys()) for action, values in examples.items()}
+    stats["saved"] = sum(len(values) for values in result.values())
+    for action, values in result.items():
+        stats[action] = len(values)
+    return result, stats
