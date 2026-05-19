@@ -5,13 +5,94 @@ from typing import Optional
 from models import ParsedAlert
 
 
-ENTRY_WORDS = ("BUY", "BUYING", "BOUGHT", "BTO", "ENTRY", "ENTER", "ENTERING", "ENTERED", "TAKING", "TOOK", "GRABBED", "FILLED")
-EXIT_WORDS = ("SELL", "STC", "TRIM", "TRIMMING", "SCALE OUT", "EXIT", "CLOSE")
-STOP_WORDS = ("STOP", "STOPPED", "STOPPED OUT", "STOP LOSS", "SL HIT", "STOP HIT")
-SOFT_IGNORE_WORDS = ("WATCHING", "POSSIBLE", "MAYBE", "NOT IN", "LOOKING AT")
+ENTRY_WORDS = (
+    "ADD",
+    "ADDED",
+    "ADDING",
+    "BTO",
+    "BUY",
+    "BUYING",
+    "BOUGHT",
+    "ENTER",
+    "ENTERED",
+    "ENTERING",
+    "ENTRY",
+    "FILL",
+    "FILLED",
+    "FOLLOWING",
+    "GRAB",
+    "GRABBED",
+    "GRABBING",
+    "IN",
+    "LONG",
+    "OPEN",
+    "OPENED",
+    "OPENING",
+    "POSITION",
+    "STARTER",
+    "STARTING",
+    "TAKE",
+    "TAKEN",
+    "TAKING",
+    "TOOK",
+)
+EXIT_WORDS = (
+    "ALL OUT",
+    "CLOSE",
+    "CLOSED",
+    "CLOSING",
+    "EXIT",
+    "EXITED",
+    "EXITING",
+    "OUT",
+    "SCALE",
+    "SCALE OUT",
+    "SCALED",
+    "SCALING OUT",
+    "SELL",
+    "SELLING",
+    "SOLD",
+    "STC",
+    "TRIM",
+    "TRIMMED",
+    "TRIMMING",
+)
+STOP_WORDS = (
+    "CUT",
+    "CUTTING",
+    "CUT HERE",
+    "INVALIDATED",
+    "SL",
+    "SL HIT",
+    "STOP",
+    "STOP HIT",
+    "STOP LOSS",
+    "STOPPED",
+    "STOPPED OUT",
+    "STOPS HIT",
+)
+SOFT_IGNORE_WORDS = (
+    "ALERT ANY ENTRY",
+    "EYEING",
+    "IDEA",
+    "INTERESTING",
+    "LOOKING AT",
+    "LOOKING FOR",
+    "MAYBE",
+    "NOT IN",
+    "PLAN",
+    "POSSIBLE",
+    "POTENTIAL",
+    "RADAR",
+    "SETUP",
+    "WAITING",
+    "WATCH",
+    "WATCHING",
+    "WILL ALERT",
+)
 
-TICKER_RE = re.compile(r"\b([A-Z]{1,5})\b")
-CONTRACT_RE = re.compile(r"\b(\d{1,5}(?:\.\d{1,2})?\s*[CP])\b", re.IGNORECASE)
+TICKER_RE = re.compile(r"\$?\b([A-Z]{1,5})\b")
+CONTRACT_RE = re.compile(r"\b(\d{1,5}(?:\.\d{1,2})?\s*(?:[CP]|CALLS?|PUTS?))\b", re.IGNORECASE)
 EXPIRATION_RE = re.compile(r"\b(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b")
 PRICE_PATTERNS = (
     re.compile(
@@ -38,6 +119,8 @@ COMMON_NON_TICKERS = {
     "TOOK",
     "GRABBED",
     "FILLED",
+    "OPEN",
+    "OPENING",
     "SELL",
     "STC",
     "TRIM",
@@ -46,6 +129,9 @@ COMMON_NON_TICKERS = {
     "OUT",
     "EXIT",
     "CLOSE",
+    "CUT",
+    "HERE",
+    "ALL",
     "CALL",
     "PUT",
     "DAY",
@@ -57,6 +143,18 @@ COMMON_NON_TICKERS = {
     "SWING",
     "OPTION",
     "NOTES",
+    "WATCH",
+    "WATCHING",
+    "IDEA",
+    "POSSIBLE",
+    "MAYBE",
+    "PLAN",
+    "SETUP",
+    "RADAR",
+    "OPEN",
+    "OPENING",
+    "POSITION",
+    "LONG",
     "AT",
     "FOR",
     "THE",
@@ -77,7 +175,7 @@ def _parse_ticker(text: str) -> Optional[str]:
         return option_line.group(1).upper()
 
     contract_context = re.search(
-        r"\b([A-Z]{1,5})\s+\d{1,5}(?:\.\d{1,2})?\s*[CP]\b",
+        r"\$?\b([A-Z]{1,5})\b\s+\$?\d{1,5}(?:\.\d{1,2})?\s*(?:[CP]|CALLS?|PUTS?)\b",
         text,
         flags=re.IGNORECASE,
     )
@@ -99,15 +197,15 @@ def today_expiration() -> str:
 def parse_trade_note(text: str) -> str:
     upper = text.upper()
     notes = []
-    if re.search(r"\b(HALF SIZE|1/2 SIZE|HALF POS(?:ITION)?)\b", upper):
+    if re.search(r"\b(HALF SIZE|HALF SIZED|1/2 SIZE|1/2 SIZED|HALF POS(?:ITION)?)\b", upper):
         notes.append("Half Size")
-    if re.search(r"\b(LIGHT|SMALL|SMALL SIZE|STARTER)\b", upper):
+    if re.search(r"\b(LIGHT|SMALL|SMALL SIZE|STARTER|STARTER SIZE|SMALLER SIZE)\b", upper):
         notes.append("Light")
     if re.search(r"\b(LOTTO|LOTTERY)\b", upper):
         notes.append("Lotto")
-    if re.search(r"\b(SWING|SWINGER|OVERNIGHT)\b", upper):
+    if re.search(r"\b(SWING|SWINGER|OVERNIGHT|MULTI[- ]?DAY)\b", upper):
         notes.append("Swing")
-    if re.search(r"\b(DAY TRADE|DAYTRADE|SCALP|SCALPING)\b", upper):
+    if re.search(r"\b(DAY TRADE|DAYTRADE|SCALP|SCALPING|INTRADAY)\b", upper):
         notes.append("Day Trade")
 
     return " / ".join(notes) if notes else "Day Trade"
@@ -150,7 +248,7 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
     has_soft_ignore = _contains_any(upper, SOFT_IGNORE_WORDS)
     contract_match = CONTRACT_RE.search(upper)
     expiration_match = EXPIRATION_RE.search(upper)
-    contract = contract_match.group(1).upper().replace(" ", "") if contract_match else None
+    contract = normalize_contract(contract_match.group(1)) if contract_match else None
     price = parse_price(raw, contract)
     ticker = _parse_ticker(upper)
     has_clean_trade_details = bool(ticker and contract and price is not None)
@@ -164,7 +262,7 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
     elif has_stop:
         action = "stop"
     elif has_exit:
-        action = "trim" if _contains_any(upper, ("TRIM", "TRIMMING", "SCALE OUT")) else "exit"
+        action = "trim" if _contains_any(upper, ("TRIM", "TRIMMED", "TRIMMING", "SCALE", "SCALED", "SCALE OUT", "SCALING OUT")) else "exit"
     else:
         return None
 
@@ -192,3 +290,10 @@ def estimated_contract_cost(price: Optional[float]) -> str:
     if price is None:
         return "Unknown"
     return f"${price * 100:,.0f}"
+
+
+def normalize_contract(value: str) -> str:
+    cleaned = value.upper().replace("$", "").replace(" ", "")
+    cleaned = cleaned.replace("CALLS", "C").replace("CALL", "C")
+    cleaned = cleaned.replace("PUTS", "P").replace("PUT", "P")
+    return cleaned

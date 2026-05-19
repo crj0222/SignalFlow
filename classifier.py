@@ -39,20 +39,41 @@ LOCAL_CONFIDENCE_WORDS = (
 )
 
 AI_CANDIDATE_WORDS = (
-    "OPTION",
-    "ENTRY",
-    "ENTER",
     "ADD",
-    "STARTER",
-    "PAID",
+    "ADDED",
+    "ADDING",
     "AVG",
     "AVERAGE",
-    "SCALE",
-    "CUT",
-    "STOP",
-    "TRIM",
-    "SELL",
+    "BTO",
+    "BUY",
+    "BOUGHT",
     "CLOSE",
+    "CUT",
+    "ENTER",
+    "ENTERED",
+    "ENTERING",
+    "ENTRY",
+    "EXIT",
+    "FILLED",
+    "GRABBED",
+    "LONG",
+    "OPEN",
+    "OPENING",
+    "OPTION",
+    "OUT",
+    "PAID",
+    "POSITION",
+    "SCALE",
+    "SELL",
+    "SOLD",
+    "STARTER",
+    "STC",
+    "STOP",
+    "STOPPED",
+    "TAKING",
+    "TOOK",
+    "TRIM",
+    "TRIMMED",
     "LOTTO",
     "SWING",
 )
@@ -74,12 +95,13 @@ SYSTEM_PROMPT = """
 Classify a Discord trading alert. Return only JSON:
 {"action":"entry|trim|exit|stop|ignore","ticker":null,"contract":null,"expiration":null,"price":null,"trade_note":null,"confidence":"normal|possible"}
 trade_note should be "Half Size", "Light", "Lotto", "Swing", "Day Trade", a slash-combo like "Light / Lotto", or null.
-entry=taking/filled/bought/opening now. trim=partial scale out. exit=closing/selling. stop=stopped out/stop loss hit/cut at stop. ignore=watchlist/idea/maybe/recap/uncertain.
+entry=taking/filled/bought/opening/adding/grabbing/starting a position now. trim=partial scale out/trim/sell some. exit=full close/all out/sold/STC. stop=stopped out/stop loss hit/cut here/invalidated. ignore=watchlist/idea/maybe/recap/uncertain.
 Extract ticker, option contract like 530C, expiration like 5/24, and price. Do not invent missing details. If trim/exit/stop lacks ticker or contract, confidence="possible".
 Price means the option fill/entry/trim/exit price, such as "@ 1.20", "at .95", "paid 1.35", "avg 1.10", "filled 2.40", "Entry: 4.20-4.30", or a decimal right after the contract. For ranges, use the first number.
 If a message starts with a style label like "Day Trade:", "Lotto:", "Swing:", or "Light:", that label is not the ticker. The ticker is the symbol next to the contract, e.g. "Day Trade: SPY 770c May 29 @.36" has ticker SPY.
 Important: a terse message with ticker + option contract + price, like "SPX 7385C - 3.5", is an entry unless it says watching/possible/maybe/idea/looking for/not in.
-Trade ideas, setups, watchlists, "looking for", "love the contract", "will alert entry", "if/over/under trigger" are ignore unless the message clearly says the analyst entered, bought, took, grabbed, filled, sold, trimmed, exited, or stopped right now.
+Trade ideas, setups, watchlists, "looking for", "watching", "eyeing", "on radar", "potential", "possible", "waiting for", "love the contract", "will alert entry", "if/over/under trigger" are ignore unless the message clearly says the analyst entered, bought, took, grabbed, filled, sold, trimmed, exited, or stopped right now.
+Common current-entry words include BTO, bought, buying, entered, entering, taking, took, grabbed, filled, added, adding, opening, starter, long. Common trim/exit words include trim, trimmed, scale out, sold, STC, all out, closing, exited. Common stop words include stopped out, stop hit, cut here, invalidated.
 """.strip()
 
 
@@ -141,7 +163,7 @@ def _should_skip_ai(content: str) -> bool:
     if len(stripped) > 500 and not re.search(r"\b\d{1,5}\s*[CP]\b", upper):
         return True
     has_ticker = bool(re.search(r"\b[A-Z]{1,5}\b", upper))
-    has_contract = bool(re.search(r"\b\d{1,5}(?:\.\d{1,2})?\s*[CP]\b", upper))
+    has_contract = bool(re.search(r"\b\d{1,5}(?:\.\d{1,2})?\s*(?:[CP]|CALLS?|PUTS?)\b", upper))
     has_decimal = bool(re.search(r"(?<![\d/])(?:\d+)?\.\d{1,2}(?![\d/])", upper))
     has_actionish = any(_has_phrase(upper, word) for word in AI_CANDIDATE_WORDS)
     return not (has_contract or (has_ticker and has_decimal) or has_actionish)
@@ -191,7 +213,7 @@ def _parsed_from_payload(content: str, payload: dict[str, Any]) -> Optional[Pars
 
     contract = str(payload["contract"]).upper().strip() if payload.get("contract") else None
     price = _coerce_float(payload.get("price"))
-    trade_note = str(payload["trade_note"]).strip() if payload.get("trade_note") else parse_trade_note(content)
+    trade_note = _coerce_trade_note(payload.get("trade_note"), content)
 
     return ParsedAlert(
         action=action,
@@ -203,6 +225,15 @@ def _parsed_from_payload(content: str, payload: dict[str, Any]) -> Optional[Pars
         raw_text=content.strip(),
         trade_note=trade_note,
     )
+
+
+def _coerce_trade_note(value: Any, content: str) -> str:
+    if value in (None, ""):
+        return parse_trade_note(content)
+    note = str(value).strip()
+    if not note or note.lower() in {"null", "none", "n/a", "na"}:
+        return parse_trade_note(content)
+    return note
 
 
 async def _classify_with_openai(content: str) -> Optional[ParsedAlert]:
