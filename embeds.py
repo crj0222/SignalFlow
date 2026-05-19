@@ -49,6 +49,17 @@ def _gain_line(gain_pct: Optional[float]) -> str:
     return f"{sign}{gain_pct:.1f}%"
 
 
+def _money(value: Optional[float]) -> str:
+    return f"${value:.2f}" if value is not None else "Not detected"
+
+
+def _roll_cost_line(parsed: ParsedAlert) -> str:
+    if parsed.roll_cost is None:
+        return "Not detected"
+    label = parsed.roll_cost_type.title() if parsed.roll_cost_type else "Cost"
+    return f"{label} ${parsed.roll_cost:.2f}"
+
+
 def _set_footer(embed: discord.Embed, logo_url: Optional[str] = None) -> None:
     if logo_url:
         embed.set_footer(text=FOOTER, icon_url=logo_url)
@@ -158,6 +169,79 @@ def exit_alert_embed(
     embed.add_field(name="Analyst", value=analyst.name, inline=True)
     _add_server(embed, guild_name)
     _set_footer(embed, logo_url)
+    return embed
+
+
+def position_update_embed(
+    analyst: Analyst,
+    parsed: ParsedAlert,
+    reference_price: Optional[float] = None,
+    guild_name: Optional[str] = None,
+    logo_url: Optional[str] = None,
+) -> discord.Embed:
+    title_map = {
+        "average_down": "🔔 Average Down",
+        "average_up": "🔔 Average Up",
+        "add": "🔔 Position Add",
+    }
+    embed = discord.Embed(
+        title=title_map.get(parsed.action, "🔔 Position Update"),
+        description=f"**{_trade_line(parsed)}**",
+        color=BRAND_COLOR,
+    )
+    embed.add_field(name="Add Price", value=_price_line(parsed), inline=True)
+    embed.add_field(name="Tracked Avg", value=_money(reference_price), inline=True)
+    embed.add_field(name="Analyst", value=analyst.name, inline=True)
+    _add_server(embed, guild_name)
+    _set_footer(embed, logo_url)
+    return embed
+
+
+def roll_alert_embed(
+    analyst: Analyst,
+    parsed: ParsedAlert,
+    old_ticker: Optional[str] = None,
+    old_contract: Optional[str] = None,
+    old_expiration: Optional[str] = None,
+    old_price: Optional[float] = None,
+    guild_name: Optional[str] = None,
+    logo_url: Optional[str] = None,
+) -> discord.Embed:
+    old_parts = [part for part in [old_ticker or parsed.ticker, old_expiration, old_contract] if part]
+    old_line = " ".join(old_parts) if old_parts else "Most recent tracked position"
+    if old_price is not None:
+        old_line = f"{old_line} @{old_price:g}"
+
+    embed = discord.Embed(
+        title="🔔 Option Roll",
+        description=f"**{_trade_line(parsed)}**",
+        color=BRAND_COLOR,
+    )
+    embed.add_field(name="Old", value=old_line, inline=False)
+    embed.add_field(name="New", value=_trade_line(parsed), inline=False)
+    embed.add_field(name="Roll", value=_roll_cost_line(parsed), inline=True)
+    embed.add_field(name="Analyst", value=analyst.name, inline=True)
+    _add_server(embed, guild_name)
+    _set_footer(embed, logo_url)
+    return embed
+
+
+def review_alert_embed(analyst: Analyst, parsed: ParsedAlert, guild_name: Optional[str] = None) -> discord.Embed:
+    raw = parsed.raw_text.replace("\n", " ")
+    if len(raw) > 900:
+        raw = f"{raw[:897]}..."
+
+    embed = discord.Embed(
+        title="⚠️ Alert Needs Review",
+        description=raw,
+        color=WARNING_COLOR,
+    )
+    embed.add_field(name="Action", value=parsed.action, inline=True)
+    embed.add_field(name="Confidence", value=parsed.confidence, inline=True)
+    embed.add_field(name="Analyst", value=analyst.name, inline=True)
+    embed.add_field(name="Detected", value=_trade_line(parsed), inline=False)
+    _add_server(embed, guild_name)
+    _set_footer(embed)
     return embed
 
 

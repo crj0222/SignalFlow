@@ -8,7 +8,7 @@ from discord.ext import commands
 from commands import admin_commands, owner_commands, user_commands
 from config import load_config
 from database import Database
-from embeds import entry_alert_embed, exit_alert_embed
+from embeds import entry_alert_embed, exit_alert_embed, position_update_embed, review_alert_embed, roll_alert_embed
 from models import Analyst, ParsedAlert
 from classifier import classify_alert
 from parser import parse_gain_percent
@@ -60,6 +60,10 @@ class SignalFlowBot(commands.Bot):
     async def on_ready(self) -> None:
         log.info("SignalFlow is online as %s", self.user)
 
+    def _confidence_level(self, confidence: str) -> str:
+        value = (confidence or "high").lower()
+        return {"normal": "high", "possible": "medium"}.get(value, value if value in {"high", "medium", "low"} else "medium")
+
     async def on_message(self, message: discord.Message) -> None:
         if not message.guild:
             return
@@ -76,17 +80,43 @@ class SignalFlowBot(commands.Bot):
         parsed = await classify_alert(message.content, examples)
         if not parsed:
             return
+        parsed = self._apply_analyst_rule_hooks(analyst, parsed)
+        parsed = self._resolve_contextual_alert(message.guild.id, analyst.id, parsed)
+        confidence = self._confidence_level(parsed.confidence)
+        if confidence == "low":
+            return
         log.info(
-            "Parsed alert action=%s ticker=%s contract=%s expiration=%s price=%s",
+            "Parsed alert action=%s confidence=%s ticker=%s contract=%s expiration=%s price=%s",
             parsed.action,
+            parsed.confidence,
             parsed.ticker,
             parsed.contract,
             parsed.expiration,
             parsed.price,
         )
 
+        if confidence == "medium":
+            await self._send_review_alert(message.guild, analyst, parsed)
+            return
+
         routed = await self.route_alert(message.guild, analyst, parsed, message.channel.id, message.id)
         log.info("Routed %s alert from %s to %s user(s)", parsed.action, analyst.name, routed)
+
+    async def _send_review_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert) -> None:
+        channel_id = self.db.get_review_channel_id(guild.id)
+        if not channel_id:
+            log.info("Skipped medium-confidence %s alert; no review channel configured", parsed.action)
+            return
+
+        channel = guild.get_channel(channel_id) or self.get_channel(channel_id)
+        if not channel or not hasattr(channel, "send"):
+            log.warning("Review channel %s is not available", channel_id)
+            return
+
+        try:
+            await channel.send(embed=review_alert_embed(analyst, parsed, guild_name=guild.name))
+        except discord.HTTPException:
+            log.exception("Failed to send review alert to channel %s", channel_id)
 
     async def route_alert(
         self,
@@ -96,15 +126,69 @@ class SignalFlowBot(commands.Bot):
         channel_id: Optional[int],
         message_id: Optional[int],
     ) -> int:
+        parsed = self._resolve_contextual_alert(guild.id, analyst.id, parsed)
         alert_id = self.db.log_alert(guild.id, analyst.id, channel_id, message_id, parsed)
         if parsed.is_entry:
             return await self._route_entry_alert(guild, analyst, parsed, alert_id)
+        if parsed.is_position_add:
+            return await self._route_position_update_alert(guild, analyst, parsed, alert_id)
+        if parsed.is_roll:
+            return await self._route_roll_alert(guild, analyst, parsed, alert_id)
         if parsed.is_exit:
             return await self._route_exit_alert(guild, analyst, parsed, alert_id)
         return 0
 
     def _logo_url(self) -> Optional[str]:
         return self.user.display_avatar.url if self.user else None
+
+    def _apply_analyst_rule_hooks(self, analyst: Analyst, parsed: ParsedAlert) -> ParsedAlert:
+        # Hook point for analyst-specific overrides without changing the shared parser.
+        # Example later: if analyst.name.lower() == "randumb": return replace(parsed, ...)
+        return parsed
+
+    def _resolve_contextual_alert(self, guild_id: int, analyst_id: int, parsed: ParsedAlert) -> ParsedAlert:
+        if parsed.action in {"add", "average_down", "average_up"}:
+            entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, parsed.contract)
+            if not entry and parsed.ticker:
+                entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, None)
+            if not entry:
+                return replace(parsed, confidence="medium")
+
+            entry_price = entry["price"]
+            action = parsed.action
+            if parsed.price is not None and entry_price is not None:
+                action = "average_down" if parsed.price < float(entry_price) else "average_up"
+            elif action == "add":
+                return replace(parsed, confidence="medium")
+
+            return replace(
+                parsed,
+                action=action,
+                ticker=parsed.ticker or entry["ticker"],
+                contract=parsed.contract or entry["contract"],
+                expiration=entry["expiration"] or parsed.expiration,
+                confidence=self._confidence_level(parsed.confidence),
+            )
+
+        if parsed.action == "roll_option":
+            entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, parsed.old_contract or None)
+            if not entry and parsed.ticker:
+                entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, None)
+            if not entry:
+                entry = self.db.latest_open_entry_alert(guild_id, analyst_id)
+            if not entry:
+                return replace(parsed, confidence="medium")
+
+            return replace(
+                parsed,
+                ticker=parsed.ticker or entry["ticker"],
+                old_contract=parsed.old_contract or entry["contract"],
+                old_expiration=parsed.old_expiration or entry["expiration"],
+                old_price=parsed.old_price if parsed.old_price is not None else entry["price"],
+                confidence="medium" if not parsed.contract else self._confidence_level(parsed.confidence),
+            )
+
+        return parsed
 
     async def _route_entry_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
         routed = 0
@@ -120,6 +204,106 @@ class SignalFlowBot(commands.Bot):
                 log.warning("Cannot DM user %s; DMs may be closed", user_id)
             except discord.HTTPException:
                 log.exception("Failed to DM entry alert to user %s", user_id)
+        return routed
+
+    async def _route_position_update_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
+        analyst_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, parsed.contract)
+        if not analyst_entry and parsed.ticker:
+            analyst_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, None)
+        if not analyst_entry:
+            return 0
+
+        routed = 0
+        for user_id in self.db.subscribed_users(guild.id, analyst.id):
+            positions = self.db.find_open_positions_for_entry_alert(guild.id, user_id, analyst_entry["id"])
+            if not positions:
+                continue
+
+            user = self.get_user(user_id) or await self.fetch_user(user_id)
+            if not user:
+                continue
+
+            position = positions[0]
+            reference_price = position["average_price"] if position["average_price"] is not None else position["entry_price"]
+            try:
+                await user.send(
+                    embed=position_update_embed(
+                        analyst,
+                        parsed,
+                        reference_price=reference_price,
+                        guild_name=guild.name,
+                        logo_url=self._logo_url(),
+                    ),
+                    view=ExitAlertView(self.db, guild.id, position["id"], alert_id),
+                )
+                self.db.record_average_event(position["id"], user_id, alert_id, parsed.action, parsed.price, parsed.raw_text)
+                routed += 1
+            except discord.Forbidden:
+                log.warning("Cannot DM user %s; DMs may be closed", user_id)
+            except discord.HTTPException:
+                log.exception("Failed to DM position update alert to user %s", user_id)
+        return routed
+
+    async def _route_roll_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
+        old_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, parsed.old_contract or None)
+        if not old_entry and parsed.ticker:
+            old_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, None)
+        if not old_entry:
+            old_entry = self.db.latest_open_entry_alert(guild.id, analyst.id)
+        if not old_entry:
+            return 0
+
+        self.db.update_roll_alert_details(
+            alert_id,
+            parsed.old_contract or old_entry["contract"],
+            parsed.old_expiration or old_entry["expiration"],
+            parsed.old_price if parsed.old_price is not None else old_entry["price"],
+        )
+        self.db.mark_entry_alert_rolled(old_entry["id"], alert_id)
+
+        routed = 0
+        for user_id in self.db.subscribed_users(guild.id, analyst.id):
+            positions = self.db.find_open_positions_for_entry_alert(guild.id, user_id, old_entry["id"])
+            if not positions:
+                continue
+
+            user = self.get_user(user_id) or await self.fetch_user(user_id)
+            if not user:
+                continue
+
+            position = positions[0]
+            old_price = position["average_price"] if position["average_price"] is not None else position["entry_price"]
+            try:
+                await user.send(
+                    embed=roll_alert_embed(
+                        analyst,
+                        parsed,
+                        old_ticker=old_entry["ticker"],
+                        old_contract=parsed.old_contract or old_entry["contract"],
+                        old_expiration=parsed.old_expiration or old_entry["expiration"],
+                        old_price=old_price,
+                        guild_name=guild.name,
+                        logo_url=self._logo_url(),
+                    ),
+                    view=ExitAlertView(self.db, guild.id, position["id"], alert_id),
+                )
+                self.db.roll_position(
+                    position["id"],
+                    user_id,
+                    alert_id,
+                    parsed.ticker or old_entry["ticker"],
+                    parsed.contract,
+                    parsed.expiration,
+                    parsed.price,
+                    parsed.roll_cost,
+                    parsed.roll_cost_type,
+                    parsed.raw_text,
+                )
+                routed += 1
+            except discord.Forbidden:
+                log.warning("Cannot DM user %s; DMs may be closed", user_id)
+            except discord.HTTPException:
+                log.exception("Failed to DM roll alert to user %s", user_id)
         return routed
 
     def _trim_gain_pct(self, entry_price: Optional[float], trim_price: Optional[float]) -> Optional[float]:
@@ -176,7 +360,8 @@ class SignalFlowBot(commands.Bot):
                 )
             exit_actions = {"trim", "close", "stop", "exit"}
             gain_price = parsed.price if parsed.action in exit_actions else None
-            gain_pct = self._trim_gain_pct(position["entry_price"], gain_price) if parsed.action in exit_actions else None
+            basis_price = position["average_price"] if position["average_price"] is not None else position["entry_price"]
+            gain_pct = self._trim_gain_pct(basis_price, gain_price) if parsed.action in exit_actions else None
             if gain_pct is None and parsed.action in exit_actions:
                 gain_pct = parse_gain_percent(parsed.raw_text)
             try:

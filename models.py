@@ -21,10 +21,23 @@ class ParsedAlert:
     price: Optional[float]
     raw_text: str
     trade_note: Optional[str] = None
+    old_contract: Optional[str] = None
+    old_expiration: Optional[str] = None
+    old_price: Optional[float] = None
+    roll_cost: Optional[float] = None
+    roll_cost_type: Optional[str] = None
 
     @property
     def is_entry(self) -> bool:
         return self.action == "entry"
+
+    @property
+    def is_position_add(self) -> bool:
+        return self.action in {"add", "average_down", "average_up"}
+
+    @property
+    def is_roll(self) -> bool:
+        return self.action == "roll_option"
 
     @property
     def is_exit(self) -> bool:

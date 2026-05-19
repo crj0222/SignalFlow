@@ -41,8 +41,38 @@ ENTRY_WORDS = (
     "TAKING",
     "TOOK",
 )
+ADD_WORDS = (
+    "ADD",
+    "ADDED",
+    "ADDING",
+    "ADD MORE",
+    "AVERAGE",
+    "AVERAGED",
+    "AVERAGING",
+    "AVERAGE DOWN",
+    "AVERAGING DOWN",
+    "AVERAGE UP",
+    "AVERAGING UP",
+    "BACK IN",
+    "RELOAD",
+    "RELOADED",
+    "RELOADING",
+)
+ROLL_WORDS = (
+    "ROLL",
+    "ROLLED",
+    "ROLLING",
+    "ROLL BACK",
+    "ROLL FORWARD",
+    "ROLL OUT",
+    "ROLL THESE",
+    "ROLLING THESE",
+)
 EXIT_WORDS = (
     "ALL OUT",
+    "AT EVEN",
+    "BREAK EVEN",
+    "BREAKEVEN",
     "CLOSE HERE",
     "CLOSE POSITION",
     "CLOSE REMAINING",
@@ -110,6 +140,7 @@ SOFT_IGNORE_WORDS = (
     "WAITING",
     "WATCH",
     "WATCHING",
+    "WILL ADD",
     "WILL ALERT",
 )
 FORWARD_ENTRY_WORDS = (
@@ -145,6 +176,10 @@ REDUCTION_TRIM_RE = re.compile(
     re.IGNORECASE,
 )
 GAIN_PERCENT_RE = re.compile(r"([+-]?\d{1,4}(?:\.\d+)?)\s*%")
+ROLL_COST_RE = re.compile(
+    r"(?:\bFOR\b|\bAT\b|@)?\s*\$?((?:\d+)?\.\d{1,2}|\d+)\s*(DEBIT|CREDIT)\b|\b(DEBIT|CREDIT)\s*\$?((?:\d+)?\.\d{1,2}|\d+)",
+    re.IGNORECASE,
+)
 MONTHS = {
     "JAN": 1,
     "JANUARY": 1,
@@ -208,6 +243,7 @@ COMMON_NON_TICKERS = {
     "ENTERING",
     "ENTRY",
     "ES",
+    "EVEN",
     "EXIT",
     "EXPO",
     "FILLED",
@@ -395,6 +431,8 @@ def parse_trade_note(text: str) -> str:
         notes.append("Lotto")
     if re.search(r"\b(SWING|SWINGER|OVERNIGHT|MULTI[- ]?DAY)\b", upper):
         notes.append("Swing")
+    if re.search(r"\b(0DTE|0 DTE|ZERO DTE)\b", upper):
+        notes.append("0DTE")
     if re.search(r"\b(DAY TRADE|DAYTRADE|SCALP|SCALPING|INTRADAY)\b", upper):
         notes.append("Day Trade")
 
@@ -445,13 +483,82 @@ def parse_gain_percent(text: str) -> Optional[float]:
     return positive[-1] if positive else matches[-1]
 
 
+def _contract_expiration_near(text: str, match: re.Match[str]) -> Optional[str]:
+    before = text[max(0, match.start() - 28) : match.start()]
+    after = text[match.end() : match.end() + 18]
+    before_matches = EXPIRATION_RE.findall(before)
+    if before_matches:
+        return before_matches[-1]
+    return parse_expiration(after)
+
+
+def parse_roll_cost(text: str) -> tuple[Optional[float], Optional[str]]:
+    match = ROLL_COST_RE.search(text)
+    if not match:
+        return None, None
+    if match.group(2):
+        return float(match.group(1)), match.group(2).lower()
+    return float(match.group(4)), match.group(3).lower()
+
+
+def parse_roll_details(text: str) -> dict[str, Optional[object]]:
+    contracts = list(CONTRACT_RE.finditer(text))
+    old_contract = None
+    old_expiration = None
+    new_contract = None
+    new_expiration = None
+
+    if contracts:
+        new_match = contracts[-1]
+        new_contract = normalize_contract(new_match.group(1))
+        new_expiration = _contract_expiration_near(text, new_match)
+        if len(contracts) > 1:
+            old_match = contracts[0]
+            old_contract = normalize_contract(old_match.group(1))
+            old_expiration = _contract_expiration_near(text, old_match)
+
+    roll_cost, roll_cost_type = parse_roll_cost(text)
+    new_price = parse_price(text, new_contract) if new_contract else parse_price(text)
+    if roll_cost_type and new_price == roll_cost:
+        new_price = None
+    return {
+        "old_contract": old_contract,
+        "old_expiration": old_expiration,
+        "new_contract": new_contract,
+        "new_expiration": new_expiration,
+        "new_price": new_price,
+        "roll_cost": roll_cost,
+        "roll_cost_type": roll_cost_type,
+    }
+
+
 def _has_strong_entry(text: str, has_clean_trade_details: bool) -> bool:
     if re.search(
-        r"(?:^|[\n|])\s*(?:OPEN|BTO|STO|BUY(?:ING)?|BOUGHT|ENTER(?:ING|ED)?|I'?M ENTERING|TAKING(?!\s+PROFITS?\b)|TOOK(?!\s+PROFITS?\b)|GRABB(?:ED|ING)?|FILL(?:ED)?|AD(?:D|DED|DING)|RE-?LOADED|ROLLED|BACK IN)\b",
+        r"(?:^|[\n|])\s*(?:OPEN|BTO|STO|BUY(?:ING)?|BOUGHT|ENTER(?:ING|ED)?|I'?M ENTERING|TAKING(?!\s+PROFITS?\b)|TOOK(?!\s+PROFITS?\b)|GRABB(?:ED|ING)?|FILL(?:ED)?)\b",
         text,
     ):
         return True
     return bool(has_clean_trade_details and re.search(r"\b(HERE|AVG|AVERAGE)\b", text))
+
+
+def _has_forward_add_context(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:MAY|MIGHT|WILL|WOULD|CAN|COULD|LOOKING TO|ROOM TO|LEAV(?:E|ING) ROOM TO|WAIT(?:ING)? TO)\s+ADD\b",
+            text,
+        )
+        or re.search(r"\bADD(?:ING)?\s+(?:IF|ON A|ON THE|UNDER|OVER|AT SUPPORT)\b", text)
+    )
+
+
+def _has_strong_add(text: str, price: Optional[float], contract_match: Optional[re.Match[str]]) -> bool:
+    if _has_forward_add_context(text):
+        return False
+    if re.search(r"\bAVERAG(?:E|ED|ING)(?:\s+(?:DOWN|UP))?\b", text):
+        return True
+    if re.search(r"\b(?:ADD(?:ED|ING)?|RELOAD(?:ED|ING)?|BACK IN)\b", text):
+        return bool(price is not None or contract_match or re.search(r"\bHERE\b", text))
+    return False
 
 
 def _looks_like_runner_trim(text: str) -> bool:
@@ -469,6 +576,7 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
     cleaned = _strip_alert_noise(raw)
     upper = cleaned.upper()
     has_entry = _contains_any(upper, ENTRY_WORDS)
+    has_roll = _contains_any(upper, ROLL_WORDS)
     has_exit = _contains_any(upper, EXIT_WORDS)
     has_stop = _contains_any(upper, STOP_WORDS)
     has_soft_ignore = _contains_any(upper, SOFT_IGNORE_WORDS)
@@ -479,20 +587,34 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
     price = parse_price(cleaned, contract)
     has_clean_trade_details = bool(ticker and contract and price is not None)
     has_strong_entry = _has_strong_entry(upper, has_clean_trade_details)
+    has_strong_add = _has_strong_add(upper, price, contract_match)
     has_runner_trim = _looks_like_runner_trim(upper)
 
     # Watchlist-style posts are ignored unless the analyst uses a clear fill/entry word.
-    if has_soft_ignore and not (has_strong_entry or has_exit or has_stop):
+    if has_soft_ignore and not (has_strong_entry or has_strong_add or has_roll or has_exit or has_stop):
         return None
 
     # Exit/stop words win over broad entry words, so "taking a trim" is not routed as a new entry.
-    if has_stop:
+    roll_details = parse_roll_details(cleaned) if has_roll else {}
+    if has_roll and (roll_details.get("new_contract") or contract_match):
+        action = "roll_option"
+        contract = roll_details.get("new_contract") or contract
+        expiration = roll_details.get("new_expiration") or expiration
+        price = roll_details.get("new_price")
+    elif has_stop:
         action = "close"
     elif has_exit or has_runner_trim:
         action = "trim" if _contains_any(upper, ("TRIM", "TRIMMED", "TRIMMING", "SCALED", "SCALE OUT", "SCALING OUT")) else "close"
         if has_runner_trim and not has_exit:
             action = "trim"
         price = parse_exit_price(cleaned)
+    elif has_strong_add:
+        if re.search(r"\bAVERAG(?:E|ED|ING)\s+DOWN\b", upper):
+            action = "average_down"
+        elif re.search(r"\bAVERAG(?:E|ED|ING)\s+UP\b", upper):
+            action = "average_up"
+        else:
+            action = "add"
     elif has_strong_entry:
         action = "entry"
     elif has_entry or has_clean_trade_details:
@@ -500,14 +622,20 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
     else:
         return None
 
-    confidence = "normal"
+    confidence = "high"
     if action in {"trim", "close", "exit", "stop"} and not (ticker or contract_match):
-        confidence = "possible"
+        confidence = "medium"
+    if action in {"add", "average_down", "average_up"} and (price is None or not (ticker or contract_match)):
+        confidence = "medium"
+    if action == "roll_option" and not (contract and (expiration or price is not None)):
+        confidence = "medium"
 
     # Avoid routing generic chat like "I entered..." when no tradable details were found.
     if action == "entry" and not has_clean_trade_details and not (ticker and (contract or price is not None)):
         return None
     if action == "entry" and price is None and _contains_any(upper, FORWARD_ENTRY_WORDS):
+        return None
+    if action in {"add", "average_down", "average_up"} and _has_forward_add_context(upper):
         return None
 
     return ParsedAlert(
@@ -519,6 +647,10 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
         price=price,
         raw_text=raw,
         trade_note=parse_trade_note(raw),
+        old_contract=roll_details.get("old_contract") if roll_details else None,
+        old_expiration=roll_details.get("old_expiration") if roll_details else None,
+        roll_cost=roll_details.get("roll_cost") if roll_details else None,
+        roll_cost_type=roll_details.get("roll_cost_type") if roll_details else None,
     )
 
 

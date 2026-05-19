@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Iterable, Optional
 
 from models import ParsedAlert
-from parser import normalize_contract, parse_alert, parse_price, parse_trade_note
+from parser import normalize_contract, parse_alert, parse_price, parse_roll_cost, parse_trade_note
 
 
 CLASSIFIER_MODEL = os.getenv("OPENAI_CLASSIFIER_MODEL", "gpt-4o-mini")
@@ -16,7 +16,7 @@ CLASSIFIER_TIMEOUT = float(os.getenv("OPENAI_CLASSIFIER_TIMEOUT_SECONDS", "8"))
 log = logging.getLogger("signalflow.classifier")
 _client = None
 MAX_EXAMPLES_PER_ACTION = 6
-CLASSIFIER_ACTIONS = ("entry", "trim", "close", "ignore")
+CLASSIFIER_ACTIONS = ("entry", "add", "average_down", "average_up", "trim", "close", "roll_option", "ignore")
 
 
 LOCAL_CONFIDENCE_WORDS = (
@@ -47,6 +47,8 @@ AI_CANDIDATE_WORDS = (
     "ADDING",
     "AVG",
     "AVERAGE",
+    "AVERAGED",
+    "AVERAGING",
     "BTO",
     "BUY",
     "BOUGHT",
@@ -66,6 +68,9 @@ AI_CANDIDATE_WORDS = (
     "OUT",
     "PAID",
     "POSITION",
+    "ROLL",
+    "ROLLED",
+    "ROLLING",
     "SCALE",
     "SELL",
     "SOLD",
@@ -104,24 +109,31 @@ OBVIOUS_CHATTER = {
 
 SYSTEM_PROMPT = """
 Classify a Discord trading alert. Return only JSON:
-{"action":"entry|trim|close|ignore","ticker":null,"contract":null,"expiration":null,"price":null,"trade_note":null,"confidence":"normal|possible"}
-trade_note should be "Half Size", "Light", "Lotto", "Swing", "Day Trade", a slash-combo like "Light / Lotto", or null. Only use "Day Trade" if the message explicitly says day trade/daytrade/scalp/intraday.
-entry=taking/filled/bought/opening/adding/grabbing/starting a position now. trim=partial scale out/trim/sell some while keeping runners. close=fully closed/all out/sold/STC/stopped out/cut/invalidated. ignore=watchlist/idea/maybe/recap/uncertain.
-Extract ticker, option contract like 530C, expiration like 5/24, and price. Do not invent missing details. If trim/close lacks ticker or contract, confidence="possible".
+{"action":"entry|add|average_down|average_up|trim|close|roll_option|ignore","ticker":null,"contract":null,"expiration":null,"price":null,"old_contract":null,"old_expiration":null,"roll_cost":null,"roll_cost_type":null,"trade_note":null,"confidence":"high|medium|low"}
+trade_note should be "Half Size", "Light", "Lotto", "Swing", "0DTE", "Day Trade", a slash-combo like "Light / Lotto", or null. Only use "Day Trade" if the message explicitly says day trade/daytrade/scalp/intraday.
+entry=taking/filled/bought/opening/grabbing/starting a new position now. add=adding/reloading/averaging into an existing position when you cannot know from text whether the add is up or down. average_down=explicit averaging down. average_up=explicit averaging up. trim=partial scale out/trim/sell some while keeping runners. close=fully closed/all out/sold/STC/stopped out/cut/breakeven exit/invalidated. roll_option=rolling from one option contract to another. ignore=watchlist/idea/maybe/recap/uncertain/chat.
+Extract ticker, option contract like 530C, expiration like 5/24, and price. Do not invent missing details. If trim/close/add/roll lacks ticker or contract, use confidence="medium" unless the wording clearly points to the analyst's most recent position.
+Use confidence high only when this is clearly an executable alert/update now. Use medium for ambiguous but possibly actionable messages that need review. Use low for weak/uncertain messages. Prioritize avoiding false alerts.
 Price means the option fill/entry/trim/close price, such as "@ 1.20", "at .95", "paid 1.35", "avg 1.10", "filled 2.40", "Entry: 4.20-4.30", or a decimal right after the contract. For entry ranges, use the first number. For trim/close ranges like "1.50 - 1.90", use the second/current price.
 If a message starts with a style label like "Day Trade:", "Lotto:", "Swing:", or "Light:", that label is not the ticker. The ticker is the symbol next to the contract, e.g. "Day Trade: SPY 770c May 29 @.36" has ticker SPY.
 Role pings and author tags like "@Waxui Alerts", "@Are Ping", and "@Scott Alerts" are not tickers.
 Important: a terse message with ticker + option contract + price, like "SPX 7385C - 3.5", is an entry unless it says watching/possible/maybe/idea/looking for/not in.
 Trade ideas, setups, watchlists, "looking for", "watching", "eyeing", "on radar", "potential", "possible", "waiting for", "love the contract", "will alert entry", "if/over/under trigger" are ignore unless the message clearly says the analyst entered, bought, took, grabbed, filled, sold, trimmed, closed, or stopped right now.
-Common current-entry words include BTO, STO, bought, buying, entered, entering, taking, took, grabbed, filled, added, adding, opening, starter, long. Common trim words include trim, trimmed, scale out, reduced risk, down to runners, down to 1/3 position, take a trim, take profits. Common close words include closed, sold, STC, all out, exited, stopped out, stop hit, cut here, invalidated.
+Common current-entry words include BTO, STO, bought, buying, entered, entering, taking, took, grabbed, filled, opening, starter, long. Common add words include add, added, adding, reload, reloaded, averaging, average down, average up, back in. Common trim words include trim, trimmed, scale out, reduced risk, down to runners, down to 1/3 position, take a trim, take profits. Common close words include closed, sold, STC, all out, exited, stopped out, stop hit, cut here, breakeven, at even, invalidated. Common roll words include roll, rolling, rolled, roll these back/out/forward.
 Formats seen in real analyst feeds:
 - "@Waxui Alerts *High Risk* | SPY here | 03/10 677P | Avg, 2.25" is an entry.
 - "OPEN $NAVN $20 call 6/18 @ 1.80 (swing, half sized for now)" is an entry.
+- "Adding NVDA 225C @ 2.10" is add unless it explicitly says average down/up.
+- "Averaging down SPY 530C at .80" is average_down.
+- "Adding higher on runners, SPY 530C @ 1.50" is add.
 - "Trim SPY here | 1.50 - 1.90 | 27%" is a trim; use 1.90 as the trim price.
 - "Closed SPY here" is close.
 - "Stopped out of SPX" is close.
+- "Cutting here at breakeven" is close.
 - "+20% here on $SOFI calls, take a trim" is a trim.
 - "down to 1/3 position MSFT @1.4" is a trim, not an entry.
+- "Rolling SPY 5/24 530C to 5/31 540C for .25 debit" is roll_option; old_contract=530C, old_expiration=5/24, contract=540C, expiration=5/31, roll_cost=.25, roll_cost_type=debit.
+- "$GOOGL roll these back to BTO 1/16 $320c @ 4.65" is roll_option with contract=320C, expiration=1/16, price=4.65.
 - "Looking to enter near open ... BTO 4/2 $200c" is ignore if no actual fill/entry price is given.
 """.strip()
 
@@ -182,7 +194,7 @@ def _prefer_local_exit_action(parsed: Optional[ParsedAlert], content: str) -> Op
         return parsed
 
     local = parse_alert(content)
-    if not local or local.action not in {"trim", "close"}:
+    if not local or local.action not in {"add", "average_down", "average_up", "trim", "close", "roll_option"}:
         return parsed
 
     return replace(
@@ -194,6 +206,10 @@ def _prefer_local_exit_action(parsed: Optional[ParsedAlert], content: str) -> Op
         expiration=parsed.expiration or local.expiration,
         price=local.price if local.price is not None else parsed.price,
         trade_note=parsed.trade_note or local.trade_note,
+        old_contract=parsed.old_contract or local.old_contract,
+        old_expiration=parsed.old_expiration or local.old_expiration,
+        roll_cost=parsed.roll_cost if parsed.roll_cost is not None else local.roll_cost,
+        roll_cost_type=parsed.roll_cost_type or local.roll_cost_type,
     )
 
 
@@ -287,17 +303,29 @@ def _parsed_from_payload(content: str, payload: dict[str, Any]) -> Optional[Pars
         return None
     if action in {"exit", "stop"}:
         action = "close"
+    if action in {"roll", "rolled", "rolling"}:
+        action = "roll_option"
     if action not in set(CLASSIFIER_ACTIONS):
         return None
 
-    confidence = str(payload.get("confidence", "normal")).lower().strip()
-    if confidence not in {"normal", "possible"}:
-        confidence = "normal"
+    confidence = str(payload.get("confidence", "high")).lower().strip()
+    confidence = {"normal": "high", "possible": "medium"}.get(confidence, confidence)
+    if confidence not in {"high", "medium", "low"}:
+        confidence = "medium"
 
     expiration = str(payload["expiration"]).strip() if payload.get("expiration") else today_expiration()
 
     contract = normalize_contract(str(payload["contract"]).upper().strip()) if payload.get("contract") else None
+    old_contract = normalize_contract(str(payload["old_contract"]).upper().strip()) if payload.get("old_contract") else None
     price = _coerce_float(payload.get("price"))
+    roll_cost = _coerce_float(payload.get("roll_cost"))
+    roll_cost_type = str(payload.get("roll_cost_type") or "").lower().strip() or None
+    if roll_cost_type not in {None, "debit", "credit"}:
+        roll_cost_type = None
+    if action == "roll_option" and roll_cost is None:
+        roll_cost, roll_cost_type = parse_roll_cost(content)
+    if action == "roll_option" and roll_cost_type and price == roll_cost:
+        price = None
     trade_note = _coerce_trade_note(payload.get("trade_note"), content)
 
     return ParsedAlert(
@@ -309,6 +337,10 @@ def _parsed_from_payload(content: str, payload: dict[str, Any]) -> Optional[Pars
         price=price if price is not None else parse_price(content, contract),
         raw_text=content.strip(),
         trade_note=trade_note,
+        old_contract=old_contract,
+        old_expiration=str(payload["old_expiration"]).strip() if payload.get("old_expiration") else None,
+        roll_cost=roll_cost,
+        roll_cost_type=roll_cost_type,
     )
 
 
@@ -329,7 +361,7 @@ async def _classify_with_openai(content: str, examples: Optional[Iterable[Any]] 
         model=CLASSIFIER_MODEL,
         response_format={"type": "json_object"},
         temperature=0,
-        max_completion_tokens=120,
+        max_completion_tokens=180,
         messages=[
             {
                 "role": "system",

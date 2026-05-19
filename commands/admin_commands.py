@@ -132,8 +132,12 @@ class AdminCommands(commands.Cog):
     @app_commands.choices(
         action=[
             app_commands.Choice(name="Entry", value="entry"),
+            app_commands.Choice(name="Add", value="add"),
+            app_commands.Choice(name="Average Down", value="average_down"),
+            app_commands.Choice(name="Average Up", value="average_up"),
             app_commands.Choice(name="Trim", value="trim"),
             app_commands.Choice(name="Close", value="close"),
+            app_commands.Choice(name="Roll Option", value="roll_option"),
             app_commands.Choice(name="Ignore", value="ignore"),
         ]
     )
@@ -306,8 +310,12 @@ class AdminCommands(commands.Cog):
         normalized_action = action.lower()
         if normalized_action in {"exit", "stop"}:
             normalized_action = "close"
-        if normalized_action not in {"entry", "trim", "close"}:
-            await interaction.response.send_message(embed=warning_embed("Action must be `entry`, `trim`, or `close`."), ephemeral=True)
+        valid_actions = {"entry", "add", "average_down", "average_up", "trim", "close", "roll_option"}
+        if normalized_action not in valid_actions:
+            await interaction.response.send_message(
+                embed=warning_embed("Action must be `entry`, `add`, `average_down`, `average_up`, `trim`, `close`, or `roll_option`."),
+                ephemeral=True,
+            )
             return
 
         parsed = ParsedAlert(
