@@ -106,13 +106,26 @@ class SignalFlowBot(commands.Bot):
             return None
         return ((trim_price - entry_price) / entry_price) * 100
 
+    def _entry_to_display_alert(self, parsed: ParsedAlert, entry) -> ParsedAlert:
+        return replace(
+            parsed,
+            ticker=entry["ticker"],
+            contract=entry["contract"],
+            expiration=entry["expiration"],
+            price=parsed.price if parsed.price is not None else entry["price"],
+            trade_note=entry["trade_note"] or parsed.trade_note,
+            confidence="normal",
+        )
+
     async def _route_exit_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
         routed = 0
         missing_trade_details = not (parsed.ticker or parsed.contract)
         analyst_entry = None
         closes_analyst_trade = parsed.action in {"stop", "exit"}
         if closes_analyst_trade:
-            analyst_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, parsed.contract)
+            lookup_ticker = parsed.ticker if not missing_trade_details else None
+            lookup_contract = parsed.contract if not missing_trade_details else None
+            analyst_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, lookup_ticker, lookup_contract)
             if not analyst_entry:
                 return 0
 
@@ -130,17 +143,16 @@ class SignalFlowBot(commands.Bot):
 
             position = positions[0]
             view = None if closes_analyst_trade else ExitAlertView(self.db, guild.id, position["id"], alert_id)
-            display_parsed = replace(
-                parsed,
-                ticker=parsed.ticker or position["ticker"] or (analyst_entry["ticker"] if analyst_entry else None),
-                contract=parsed.contract or position["contract"] or (analyst_entry["contract"] if analyst_entry else None),
-                expiration=(
-                    position["expiration"]
-                    if missing_trade_details
-                    else (parsed.expiration or position["expiration"] or (analyst_entry["expiration"] if analyst_entry else None))
-                ),
-                confidence="normal",
-            )
+            if closes_analyst_trade and analyst_entry:
+                display_parsed = self._entry_to_display_alert(parsed, analyst_entry)
+            else:
+                display_parsed = replace(
+                    parsed,
+                    ticker=parsed.ticker or position["ticker"],
+                    contract=parsed.contract or position["contract"],
+                    expiration=position["expiration"] if missing_trade_details else (parsed.expiration or position["expiration"]),
+                    confidence="normal",
+                )
             gain_pct = self._trim_gain_pct(position["entry_price"], display_parsed.price) if parsed.action == "trim" else None
             try:
                 await user.send(
