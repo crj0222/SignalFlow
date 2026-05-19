@@ -61,7 +61,6 @@ def entry_alert_embed(analyst: Analyst, parsed: ParsedAlert) -> discord.Embed:
     embed.add_field(name="Expiration", value=_value(parsed.expiration), inline=True)
     embed.add_field(name="Strike", value=_value(parsed.contract), inline=True)
     embed.add_field(name="Entry", value=f"${parsed.price:.2f}" if parsed.price is not None else "Not detected", inline=True)
-    embed.add_field(name="Type", value=side, inline=True)
     embed.add_field(name="Style", value=_value(parsed.trade_note), inline=True)
     embed.set_footer(text=FOOTER)
     return embed
