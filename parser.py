@@ -486,11 +486,11 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
 
     # Exit/stop words win over broad entry words, so "Closed ... in profit" is not rejected as an entry.
     if has_stop:
-        action = "stop"
+        action = "close"
     elif has_strong_entry:
         action = "entry"
     elif has_exit or has_runner_trim:
-        action = "trim" if _contains_any(upper, ("TRIM", "TRIMMED", "TRIMMING", "SCALED", "SCALE OUT", "SCALING OUT")) else "exit"
+        action = "trim" if _contains_any(upper, ("TRIM", "TRIMMED", "TRIMMING", "SCALED", "SCALE OUT", "SCALING OUT")) else "close"
         if has_runner_trim and not has_exit:
             action = "trim"
         price = parse_exit_price(cleaned)
@@ -500,7 +500,7 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
         return None
 
     confidence = "normal"
-    if action in {"trim", "exit", "stop"} and not (ticker or contract_match):
+    if action in {"trim", "close", "exit", "stop"} and not (ticker or contract_match):
         confidence = "possible"
 
     # Avoid routing generic chat like "I entered..." when no tradable details were found.

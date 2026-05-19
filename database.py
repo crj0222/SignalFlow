@@ -395,6 +395,8 @@ class Database:
 
     def add_classifier_example(self, guild_id: int, action: str, example_text: str) -> int:
         self.ensure_guild(guild_id)
+        if action in {"exit", "stop"}:
+            action = "close"
         with self.connect() as conn:
             cur = conn.execute(
                 """
@@ -408,7 +410,7 @@ class Database:
     def add_classifier_examples(self, guild_id: int, examples: dict[str, list[str]]) -> int:
         self.ensure_guild(guild_id)
         rows = [
-            (guild_id, action, example_text.strip())
+            (guild_id, "close" if action in {"exit", "stop"} else action, example_text.strip())
             for action, texts in examples.items()
             for example_text in texts
             if example_text and example_text.strip()

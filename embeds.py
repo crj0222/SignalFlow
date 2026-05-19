@@ -6,6 +6,7 @@ from models import Analyst, ParsedAlert
 
 BRAND_COLOR = 0x2F80ED
 SUCCESS_COLOR = 0x27AE60
+LOSS_COLOR = 0xEB5757
 WARNING_COLOR = 0xF2C94C
 MUTED_COLOR = 0x95A5A6
 FOOTER = "SignalFlow • Alert routing only, not financial advice"
@@ -67,7 +68,7 @@ def start_embed() -> discord.Embed:
 def help_embed() -> discord.Embed:
     embed = discord.Embed(
         title="SignalFlow Help",
-        description="Use SignalFlow to choose analyst alerts, track entries you actually take, and receive matching trim/stop updates.",
+        description="Use SignalFlow to choose analyst alerts, track entries you actually take, and receive matching trim/close updates.",
         color=BRAND_COLOR,
     )
     embed.add_field(
@@ -113,23 +114,26 @@ def exit_alert_embed(
     possible: bool = False,
     gain_pct: Optional[float] = None,
 ) -> discord.Embed:
-    if parsed.action == "stop":
-        title = "⚠️ Possible Stop Alert" if possible else "⚠️ Stop-Out Alert"
-        top_note = "Stop update"
-    elif parsed.action == "trim":
+    if parsed.action == "trim":
         title = "⚠️ Possible Trim Alert" if possible else "🔔 Trim Alert"
         top_note = "Trim update"
     else:
-        title = "⚠️ Possible Sell Alert" if possible else "🔔 Sell Alert"
-        top_note = "Exit update"
+        title = "⚠️ Possible Close Alert" if possible else "🔔 Trade Closed"
+        top_note = "Position closed"
+    color = WARNING_COLOR if possible else BRAND_COLOR
+    if parsed.action != "trim" and gain_pct is not None:
+        color = SUCCESS_COLOR if gain_pct >= 0 else LOSS_COLOR
+
     embed = discord.Embed(
         title=title,
         description=f"**{_trade_line(parsed)}**\n{top_note}",
-        color=WARNING_COLOR if possible else BRAND_COLOR,
+        color=color,
     )
     embed.add_field(name="Price", value=_price_line(parsed), inline=True)
     if parsed.action == "trim":
         embed.add_field(name="Gain", value=_gain_line(gain_pct), inline=True)
+    else:
+        embed.add_field(name="P/L", value=_gain_line(gain_pct), inline=True)
     embed.add_field(name="Expiration", value=_value(parsed.expiration), inline=True)
     embed.add_field(name="Analyst", value=analyst.name, inline=True)
     embed.set_footer(text=FOOTER)

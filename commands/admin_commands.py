@@ -133,8 +133,7 @@ class AdminCommands(commands.Cog):
         action=[
             app_commands.Choice(name="Entry", value="entry"),
             app_commands.Choice(name="Trim", value="trim"),
-            app_commands.Choice(name="Exit", value="exit"),
-            app_commands.Choice(name="Stop", value="stop"),
+            app_commands.Choice(name="Close", value="close"),
             app_commands.Choice(name="Ignore", value="ignore"),
         ]
     )
@@ -219,7 +218,7 @@ class AdminCommands(commands.Cog):
         saved = self.db.add_classifier_examples(interaction.guild_id, examples)
         lines = [
             f"Saved `{saved}` examples from `{file.filename}`.",
-            f"Entry `{stats.get('entry', 0)}`  Trim `{stats.get('trim', 0)}`  Exit `{stats.get('exit', 0)}`  Stop `{stats.get('stop', 0)}`  Ignore `{stats.get('ignore', 0)}`",
+            f"Entry `{stats.get('entry', 0)}`  Trim `{stats.get('trim', 0)}`  Close `{stats.get('close', 0)}`  Ignore `{stats.get('ignore', 0)}`",
             f"Scanned `{stats.get('rows', 0)}` rows.",
         ]
         await interaction.followup.send(embed=success_embed("\n".join(lines)), ephemeral=True)
@@ -305,8 +304,10 @@ class AdminCommands(commands.Cog):
             return
 
         normalized_action = action.lower()
-        if normalized_action not in {"entry", "trim", "exit", "stop"}:
-            await interaction.response.send_message(embed=warning_embed("Action must be `entry`, `trim`, `exit`, or `stop`."), ephemeral=True)
+        if normalized_action in {"exit", "stop"}:
+            normalized_action = "close"
+        if normalized_action not in {"entry", "trim", "close"}:
+            await interaction.response.send_message(embed=warning_embed("Action must be `entry`, `trim`, or `close`."), ephemeral=True)
             return
 
         parsed = ParsedAlert(

@@ -1,0 +1,41 @@
+BTO $NVDA 212.5c 04/27 @0.81 @Demon Alerts
+
+BTO $GOOGL 350c 04/27 @0.60 @Demon Alerts
+
+BTO $AAPL 275c 04/29 @0.73 swing potential @Demon Alerts
+
+BTO $TSLA 367.5p 04/29 @0.92 @Demon Alerts
+
+BTO $TSLA 380c 05/01 @1.80 @Demon Alerts
+
+BTO $MSFT 420c 05/01 @85 No stop on Friday @Demon Alerts
+
+BTO $AMZN 275c 05/04 @0.40 @Demon Alerts
+
+BTO $TSLA 410c 05/06 @1.47 swing potential @Demon Alerts
+
+BTO $QQQ 679p 05/05 @0.62 - **LOTTO ALERT, NO STOP LOSS** This means using only a bit of profits @Demon Alerts
+
+BTO $NVDA 207.5c 05/06 @0.41 @Demon Alerts
+
+BTO $AAPL 295c 05/08 @0.65 swing potential @Demon Alerts
+
+BTO QQQ $701c 05/07 @.78 @Demon Alerts
+
+BTO $TSLA 432.5c 05/08 @1.00 @Demon Alerts
+
+BTO $TSLA 447.5c 05/11 @0.85 size lighter @Demon Alerts
+
+BTO $AAPL 297.5c 05/13 @0.76 @Demon Alerts
+
+BTO $TSLA 450c 05/13 @0.83 @Demon Alerts
+
+BTO $AVGO 450c 05/13 @1.20 Swing potential @Demon Alerts
+
+BTO $QQQ 715c 05/15 @0.90 **NO STOP ON FRIDAY** @Demon Alerts
+
+BTO $MSFT 425c 05/18 @1.05 @Demon Alerts
+
+BTO $MSFT 440c 05/20 @1.00 @Demon Alerts
+
+BTO $QQQ 694p 05/19 @0.76 @Demon Alerts

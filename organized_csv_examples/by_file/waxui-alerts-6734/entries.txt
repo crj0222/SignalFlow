@@ -1,0 +1,157 @@
+@Waxui Alerts *High Risk* SPY here 03/10 677P Avg, 2.25
+
+@Waxui Alerts **HIGH RISK** SPX here 03/10 6805P Avg. 6.50 Risking against HOD, PWPp
+
+@Waxui Alerts *High Risk* SPY here 03/11 677P Avg, 2.00 Risking against /ES 6800
+
+@Waxui Alerts *Riskier* SPY here 03/12 672C Avg. 1.75
+
+@Waxui Alerts **High Risk** SPY here 03/12 668C Avg, 2.00
+
+@Waxui Alerts Damnit SPY here 03/12 668C Avg, 1.90 Stops under LOD
+
+@Waxui Alerts **LOTTO** SPY here 03/13 672C Avg, 1.55
+
+@Waxui Alerts **LOTTO** SPY here 03/13 669C Avg, 1.95 Risking against LOD.
+
+@Waxui Alerts **LOTTO** SPX here 03/13 6670C Avg. 6.00 Please keep sizing in check.
+
+@Waxui Alerts *Riskier* SPY here 03/16 671P Avg, 1.65 Risking against Friday High.
+
+@Waxui Alerts *Swing Starter* PLTR here 03/20 155C Avg. 2.40
+
+@Waxui Alerts Fine, **LOTTO** SPX here 03/18 6670C Avg, 5.20 PLAY LIGHT.
+
+@Waxui Alerts **LOTTO** SPY here 03/20 657C Avg.2.4
+
+@Waxui Alerts **LOTTO** SPX here 03/19 6555P Avg, 6.00 **PWP**
+
+@Waxui Alerts **LOTTO** SPX here 03/19 5690C Avg. 5.00 0 or Hero.
+
+@Waxui Alerts *Riskier* SPY here 03/23 659P Avg, 2.00 Stops over HOD
+
+@Waxui Alerts **HIGH RISK** SPY here 03/23 655P Avg. 1.45 Starting light, very aggressive entry.
+
+@Waxui Alerts *High Risk* SPY here 03/24 652P Avg. 1.80
+
+@Waxui Alerts Repositioning SPY here 03/24 655P Avg. 1.60
+
+@Waxui Alerts *Riskier* SPY here 03/25 661C Avg. 1.60
+
+@Waxui Alerts *High risk* SPY here 03/25 656P Avg. 1.80 Stops over 6655.
+
+@Waxui Alerts Fk it im staying short SPY here 03/25 656P Avg, 1.75
+
+@Waxui Alerts **HIGH RISK** SPY here 03/25 658P Avg. 1.30 **VIX 25**
+
+@Waxui Alerts *High Risk* SPY here 03/26 655C Avg. 1.55 Start light
+
+@Waxui Alerts **HIGH RISK** SPX here 03/26 6560C Avg. 6.00 Same stop, (/ES) 6580.
+
+@Waxui Alerts **LOTTO** SPY here 03/27 642C Avg, 2.15
+
+@Waxui Alerts **LOTTO** SPX here 03/27 6430C Avg. 6.50 Pure R:R play, 10pt stop.
+
+@Waxui Alerts *Riskier* SPY here 03/30 637C Avg. 1.45 Stops under LOD.
+
+@Waxui Alerts *Risky Swing Starter* SPY here 03/31 631C Avg. 3.05 Left room to add before close.
+
+@Waxui Alerts *Riskier* SPY here 04/01 654P Avg, 1.65
+
+@Waxui Alerts **HIGH RISK** SPX here 04/01 6580P Avg. 5.50 Stops over HOD
+
+@Waxui Alerts **LOTTO** SPY here 04/02 648P Avg. 2.15
+
+@Waxui Alerts *Riskier* SPY here 04/06 657C Avg. 1.90
+
+@Waxui Alerts *Riskier* SPY here 04/06 656P Avg. 1.00 Playing with profits
+
+@Waxui Alerts **HIGH RISK** SPY here 04/07 655C Avg, 1.70 Stay light, stops under (/ES) 6600
+
+@Waxui Alerts *Riskier* SPY here 04/08 675C Avg, 1.35 Stops under LOD.
+
+@Waxui Alerts **HIGH RISK** SPX here 04/08 6775C Avg, 5.60 Last long attempt
+
+@Waxui Alerts *Riskier* SPY here 04/09 674P Avg. 1.05
+
+@Waxui Alerts *Riskier* SPY here 04/09 675C Avg, 1.05
+
+@Waxui Alerts **PURE LOTTO** APP here 04/10 365P Avg 3.50 0 or Hero.
+
+@Waxui Alerts **LOTTO** SPY here 04/10 679C Avg. 1.30 Left room to add Stops under (/ES) 6845
+
+@Waxui Alerts *Riskier* SPX here 04/13 6805P Avg, 5.50
+
+@Waxui Alerts **HIGH RISK** SPX here 04/13 6840P Avg, 4.00 Stops over HOD.
+
+@Waxui Alerts *Riskier* SPY here 04/14 690P Avg. 1.10
+
+@Waxui Alerts **HIGH RISK** SPX here 04/14 6930P Avg. 6.00
+
+@Waxui Alerts *High Risk* SPY here 04/15 695C Avg. 1.25
+
+@Waxui Alerts *Riskier* SPY here 04/16 700C Avg. 1.70
+
+@Waxui Alerts *Riskier* SPY here 04/20 708C Avg. 1.35
+
+@Waxui Alerts *High Risk* SPX here 04/20 7085P Avg. 5.50
+
+@Waxui Alerts *Riskier* SPY here 04/21 710C Avg. 1.75 Will add if necessary.
+
+@Waxui Alerts **HIGH RISK** SPX here 04/21 7115C Avg. 5.00
+
+@Waxui Alerts *Riskier* MU here 04/24 480C Avg 7.00
+
+@Waxui Alerts *riskier* SPX here 04/22 7135C Avg. 5.50
+
+@Waxui Alerts *Riskier* SPY here 04/23 710C Avg. 1.25 Keeping this light
+
+@Waxui Alerts **LOTTO** SPY here 04/24 710C Avg. 1.65 Left room to add
+
+@Waxui Alerts *Riskier* SPY here 04/27 713P Avg. 1.15
+
+@Waxui Alerts **HIGH RISK** SPX here 04/27 7140P Avg. 5.60 Poor R:R entry, reflected in sizing
+
+@Waxui Alerts *Riskier* TSLA here 04/29 380C Avg. 3.75
+
+@Waxui Alerts *High Risk* SPX here 04/28 7120P Avg. 6.20 Stay light
+
+@Waxui Alerts **FOMC LOTTO** SPX here 04/29 7140C Avg. 4.80
+
+@Waxui Alerts **LOTTO** TSLA here 05/01 385C Avg. 2.80
+
+@Waxui Alerts **LOTTO** Reloaded TSLA here 05/01 382.5C Avg. 2.90
+
+@Waxui Alerts *Swing Starter* TSLA here 05/06 395C Avg. 3.60
+
+@Waxui Alerts *Riskier* SPY here 05/04 720C Avg. 1.40
+
+@Waxui Alerts **HIGH RISK** SPX here 05/05 7260C Avg. 5.00 Left room to add
+
+@Waxui Alerts *Riskier* SPY here 05/06 729C Avg. 1.35
+
+@Waxui Alerts **HIGH RISK** SPX here 05/07 7360C Avg. 6.50
+
+@Waxui Alerts **LOTTO** SPY here 05/08 735C Avg. 1.50 Will add if necessady
+
+@Waxui Alerts **HIGH RISK** SPX here 05/11 7400P Avg. 5.70 Stops over HOD
+
+@Waxui Alerts *Riskier* Re-loaded SPX here 05/11 7410P Avg. 5.20
+
+@Waxui Alerts *HIGH RISK* SPX here 05/11 7420P Avg. 4.00
+
+@Waxui Alerts *Riskier* SPY here 05/12 736C Avg. 1.25 Stops under LOD
+
+@Waxui Alerts *Riskier* SPY here 05/12 733C Avg. 1.25 Risking 8-10 points.
+
+@Waxui Alerts **LOTTO** TSLA here 05/15 450C Avg. 5.50
+
+@Waxui Alerts **LOTTO** SPX here 05/14 7495C Avg. 5.00 Size for catastrophe
+
+@Waxui Alerts **HIGH RISK** SPY here 05/18 739C Avg. 1.20
+
+@Waxui Alerts *Riskier* SPY here 05/19 735P Avg. 2.05
+
+@Waxui Alerts **HIGH RISK** SPY here 05/19 735C Avg, 1.75 Stops under LOD
+
+@Waxui Alerts *High Risk* SPY here 05/19 733C Avg, 1.50 Plan to hold these until we rip face

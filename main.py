@@ -139,7 +139,7 @@ class SignalFlowBot(commands.Bot):
         routed = 0
         missing_trade_details = not (parsed.ticker or parsed.contract)
         analyst_entry = None
-        closes_analyst_trade = parsed.action in {"stop", "exit"}
+        closes_analyst_trade = parsed.action in {"close", "stop", "exit"}
         if missing_trade_details or closes_analyst_trade:
             lookup_ticker = parsed.ticker if not missing_trade_details else None
             lookup_contract = parsed.contract if not missing_trade_details else None
@@ -171,8 +171,10 @@ class SignalFlowBot(commands.Bot):
                     expiration=position["expiration"] if missing_trade_details else (parsed.expiration or position["expiration"]),
                     confidence="normal",
                 )
-            gain_pct = self._trim_gain_pct(position["entry_price"], display_parsed.price) if parsed.action == "trim" else None
-            if gain_pct is None and parsed.action == "trim":
+            exit_actions = {"trim", "close", "stop", "exit"}
+            gain_price = parsed.price if parsed.action in exit_actions else None
+            gain_pct = self._trim_gain_pct(position["entry_price"], gain_price) if parsed.action in exit_actions else None
+            if gain_pct is None and parsed.action in exit_actions:
                 gain_pct = parse_gain_percent(parsed.raw_text)
             try:
                 await user.send(

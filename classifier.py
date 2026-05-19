@@ -15,6 +15,7 @@ CLASSIFIER_TIMEOUT = float(os.getenv("OPENAI_CLASSIFIER_TIMEOUT_SECONDS", "8"))
 log = logging.getLogger("signalflow.classifier")
 _client = None
 MAX_EXAMPLES_PER_ACTION = 6
+CLASSIFIER_ACTIONS = ("entry", "trim", "close", "ignore")
 
 
 LOCAL_CONFIDENCE_WORDS = (
@@ -102,22 +103,22 @@ OBVIOUS_CHATTER = {
 
 SYSTEM_PROMPT = """
 Classify a Discord trading alert. Return only JSON:
-{"action":"entry|trim|exit|stop|ignore","ticker":null,"contract":null,"expiration":null,"price":null,"trade_note":null,"confidence":"normal|possible"}
+{"action":"entry|trim|close|ignore","ticker":null,"contract":null,"expiration":null,"price":null,"trade_note":null,"confidence":"normal|possible"}
 trade_note should be "Half Size", "Light", "Lotto", "Swing", "Day Trade", a slash-combo like "Light / Lotto", or null. Only use "Day Trade" if the message explicitly says day trade/daytrade/scalp/intraday.
-entry=taking/filled/bought/opening/adding/grabbing/starting a position now. trim=partial scale out/trim/sell some. exit=full close/all out/sold/STC. stop=stopped out/stop loss hit/cut here/invalidated. ignore=watchlist/idea/maybe/recap/uncertain.
-Extract ticker, option contract like 530C, expiration like 5/24, and price. Do not invent missing details. If trim/exit/stop lacks ticker or contract, confidence="possible".
-Price means the option fill/entry/trim/exit price, such as "@ 1.20", "at .95", "paid 1.35", "avg 1.10", "filled 2.40", "Entry: 4.20-4.30", or a decimal right after the contract. For entry ranges, use the first number. For trim/exit ranges like "1.50 - 1.90", use the second/current price.
+entry=taking/filled/bought/opening/adding/grabbing/starting a position now. trim=partial scale out/trim/sell some while keeping runners. close=fully closed/all out/sold/STC/stopped out/cut/invalidated. ignore=watchlist/idea/maybe/recap/uncertain.
+Extract ticker, option contract like 530C, expiration like 5/24, and price. Do not invent missing details. If trim/close lacks ticker or contract, confidence="possible".
+Price means the option fill/entry/trim/close price, such as "@ 1.20", "at .95", "paid 1.35", "avg 1.10", "filled 2.40", "Entry: 4.20-4.30", or a decimal right after the contract. For entry ranges, use the first number. For trim/close ranges like "1.50 - 1.90", use the second/current price.
 If a message starts with a style label like "Day Trade:", "Lotto:", "Swing:", or "Light:", that label is not the ticker. The ticker is the symbol next to the contract, e.g. "Day Trade: SPY 770c May 29 @.36" has ticker SPY.
 Role pings and author tags like "@Waxui Alerts", "@Are Ping", and "@Scott Alerts" are not tickers.
 Important: a terse message with ticker + option contract + price, like "SPX 7385C - 3.5", is an entry unless it says watching/possible/maybe/idea/looking for/not in.
-Trade ideas, setups, watchlists, "looking for", "watching", "eyeing", "on radar", "potential", "possible", "waiting for", "love the contract", "will alert entry", "if/over/under trigger" are ignore unless the message clearly says the analyst entered, bought, took, grabbed, filled, sold, trimmed, exited, or stopped right now.
-Common current-entry words include BTO, STO, bought, buying, entered, entering, taking, took, grabbed, filled, added, adding, opening, starter, long. Common trim/exit words include trim, trimmed, scale out, sold, STC, all out, closing, exited, reduced risk, down to runners, down to 1/3 position, take a trim, take profits. Common stop words include stopped out, stop hit, cut here, invalidated.
+Trade ideas, setups, watchlists, "looking for", "watching", "eyeing", "on radar", "potential", "possible", "waiting for", "love the contract", "will alert entry", "if/over/under trigger" are ignore unless the message clearly says the analyst entered, bought, took, grabbed, filled, sold, trimmed, closed, or stopped right now.
+Common current-entry words include BTO, STO, bought, buying, entered, entering, taking, took, grabbed, filled, added, adding, opening, starter, long. Common trim words include trim, trimmed, scale out, reduced risk, down to runners, down to 1/3 position, take a trim, take profits. Common close words include closed, sold, STC, all out, exited, stopped out, stop hit, cut here, invalidated.
 Formats seen in real analyst feeds:
 - "@Waxui Alerts *High Risk* | SPY here | 03/10 677P | Avg, 2.25" is an entry.
 - "OPEN $NAVN $20 call 6/18 @ 1.80 (swing, half sized for now)" is an entry.
 - "Trim SPY here | 1.50 - 1.90 | 27%" is a trim; use 1.90 as the trim price.
-- "Closed SPY here" is an exit.
-- "Stopped out of SPX" is a stop.
+- "Closed SPY here" is close.
+- "Stopped out of SPX" is close.
 - "+20% here on $SOFI calls, take a trim" is a trim.
 - "down to 1/3 position MSFT @1.4" is a trim, not an entry.
 - "Looking to enter near open ... BTO 4/2 $200c" is ignore if no actual fill/entry price is given.
@@ -231,9 +232,11 @@ def _format_examples(examples: Optional[Iterable[Any]]) -> str:
     if not examples:
         return ""
 
-    grouped: dict[str, list[str]] = {action: [] for action in ("entry", "trim", "exit", "stop", "ignore")}
+    grouped: dict[str, list[str]] = {action: [] for action in CLASSIFIER_ACTIONS}
     for example in examples:
         action = str(_example_value(example, "action") or "").lower().strip()
+        if action in {"exit", "stop"}:
+            action = "close"
         text = str(_example_value(example, "example_text") or "").strip()
         if action not in grouped or not text:
             continue
@@ -261,7 +264,9 @@ def _parsed_from_payload(content: str, payload: dict[str, Any]) -> Optional[Pars
     action = str(payload.get("action", "ignore")).lower().strip()
     if action == "ignore":
         return None
-    if action not in {"entry", "trim", "exit", "stop"}:
+    if action in {"exit", "stop"}:
+        action = "close"
+    if action not in set(CLASSIFIER_ACTIONS):
         return None
 
     confidence = str(payload.get("confidence", "normal")).lower().strip()

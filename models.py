@@ -28,4 +28,4 @@ class ParsedAlert:
 
     @property
     def is_exit(self) -> bool:
-        return self.action in {"trim", "exit", "stop"}
+        return self.action in {"trim", "close", "exit", "stop"}

@@ -3,7 +3,7 @@ import io
 import re
 from collections import OrderedDict
 
-VALID_EXAMPLE_ACTIONS = ("entry", "trim", "exit", "stop", "ignore")
+VALID_EXAMPLE_ACTIONS = ("entry", "trim", "close", "ignore")
 
 IGNORE_PATTERNS = (
     r"\b(past\s+\d+\s+weeks?\s+recap|recap|best of|results)\b",
@@ -79,11 +79,11 @@ def _classify_csv_example(text: str) -> str | None:
             return "ignore" if _looks_like_ignore_example(text) else None
         if re.search(r"\bCUT\s+(?:MY|THE|THIS|OUR)?\s*POSITION\s+IN\s+HALF\b", upper):
             return "trim" if _has_trade_shape(text) else None
-        return "stop"
+        return "close"
     if _match_any(TRIM_PATTERNS, upper) and _has_trade_shape(text):
         return "trim"
     if _match_any(EXIT_PATTERNS, upper) and _has_trade_shape(text):
-        return "exit"
+        return "close"
     if _looks_like_ignore_example(text):
         return "ignore"
     return None
