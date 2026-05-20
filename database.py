@@ -143,12 +143,41 @@ class Database:
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS alert_deliveries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    alert_id INTEGER NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    dm_channel_id INTEGER NOT NULL,
+                    dm_message_id INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    delivered_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT,
+                    UNIQUE(alert_id, user_id),
+                    FOREIGN KEY(alert_id) REFERENCES alert_logs(id) ON DELETE CASCADE,
+                    FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS classifier_examples (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     guild_id INTEGER NOT NULL,
                     action TEXT NOT NULL,
                     example_text TEXT NOT NULL,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS classifier_example_imports (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    file_type TEXT NOT NULL,
+                    saved_count INTEGER NOT NULL DEFAULT 0,
+                    scanned_count INTEGER NOT NULL DEFAULT 0,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    imported_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(guild_id, action, filename),
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
                 );
                 """
@@ -364,9 +393,25 @@ class Database:
             ).fetchall()
         return [self._row_to_analyst(row) for row in rows]
 
-    def set_analyst_channel(self, guild_id: int, analyst_id: int, channel_id: int) -> None:
+    def set_analyst_channel(self, guild_id: int, analyst_id: int, channel_id: int) -> Optional[Analyst]:
         self.ensure_guild(guild_id)
         with self.connect() as conn:
+            previous = conn.execute(
+                """
+                SELECT a.* FROM analysts a
+                JOIN analyst_channels ac ON ac.analyst_id = a.id
+                WHERE ac.guild_id = ? AND ac.channel_id = ? AND ac.analyst_id != ?
+                LIMIT 1
+                """,
+                (guild_id, channel_id, analyst_id),
+            ).fetchone()
+            conn.execute(
+                """
+                DELETE FROM analyst_channels
+                WHERE guild_id = ? AND channel_id = ? AND analyst_id != ?
+                """,
+                (guild_id, channel_id, analyst_id),
+            )
             conn.execute(
                 """
                 INSERT INTO analyst_channels (guild_id, analyst_id, channel_id)
@@ -375,6 +420,7 @@ class Database:
                 """,
                 (guild_id, analyst_id, channel_id),
             )
+        return self._row_to_analyst(previous) if previous else None
 
     def get_analyst_for_channel(self, guild_id: int, channel_id: int) -> Optional[Analyst]:
         with self.connect() as conn:
@@ -521,6 +567,49 @@ class Database:
             )
         return len(rows)
 
+    def record_classifier_example_import(
+        self,
+        guild_id: int,
+        action: str,
+        filename: str,
+        file_type: str,
+        saved_count: int,
+        scanned_count: int,
+    ) -> None:
+        self.ensure_guild(guild_id)
+        if action in {"exit", "stop"}:
+            action = "close"
+        clean_filename = Path(filename).name.strip() or "examples.txt"
+        clean_type = file_type.strip().lower().lstrip(".") or "txt"
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO classifier_example_imports
+                    (guild_id, action, filename, file_type, saved_count, scanned_count, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(guild_id, action, filename) DO UPDATE SET
+                    file_type = excluded.file_type,
+                    saved_count = excluded.saved_count,
+                    scanned_count = excluded.scanned_count,
+                    is_active = 1,
+                    imported_at = CURRENT_TIMESTAMP
+                """,
+                (guild_id, action, clean_filename, clean_type, saved_count, scanned_count),
+            )
+
+    def list_classifier_example_imports(self, guild_id: int, limit: int = 12) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT id, action, filename, file_type, saved_count, scanned_count, imported_at
+                FROM classifier_example_imports
+                WHERE guild_id = ? AND is_active = 1
+                ORDER BY imported_at DESC, id DESC
+                LIMIT ?
+                """,
+                (guild_id, limit),
+            ).fetchall()
+
     def list_classifier_examples(self, guild_id: int, limit: int = 60) -> list[sqlite3.Row]:
         with self.connect() as conn:
             return conn.execute(
@@ -582,6 +671,53 @@ class Database:
                 ),
             )
             return int(cur.lastrowid)
+
+    def record_alert_delivery(
+        self,
+        alert_id: int,
+        guild_id: int,
+        user_id: int,
+        dm_channel_id: int,
+        dm_message_id: int,
+        status: str = "active",
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO alert_deliveries
+                (alert_id, guild_id, user_id, dm_channel_id, dm_message_id, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(alert_id, user_id) DO UPDATE SET
+                    dm_channel_id = excluded.dm_channel_id,
+                    dm_message_id = excluded.dm_message_id,
+                    status = excluded.status,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (alert_id, guild_id, user_id, dm_channel_id, dm_message_id, status),
+            )
+
+    def list_alert_deliveries(self, alert_id: int, status: Optional[str] = None) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT * FROM alert_deliveries
+                WHERE alert_id = ?
+                AND (? IS NULL OR status = ?)
+                ORDER BY delivered_at ASC, id ASC
+                """,
+                (alert_id, status, status),
+            ).fetchall()
+
+    def mark_alert_delivery_status(self, delivery_id: int, status: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE alert_deliveries
+                SET status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (status, delivery_id),
+            )
 
     def is_alert_open(self, alert_id: int) -> bool:
         with self.connect() as conn:
@@ -753,6 +889,20 @@ class Database:
 
     def open_position(self, guild_id: int, user_id: int, analyst_id: int, alert_id: int) -> int:
         with self.connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT id FROM user_positions
+                WHERE guild_id = ? AND user_id = ? AND analyst_id = ?
+                AND status = 'open'
+                AND (entry_alert_id = ? OR current_alert_id = ?)
+                ORDER BY opened_at DESC, id DESC
+                LIMIT 1
+                """,
+                (guild_id, user_id, analyst_id, alert_id, alert_id),
+            ).fetchone()
+            if existing:
+                return int(existing["id"])
+
             alert = conn.execute("SELECT * FROM alert_logs WHERE id = ?", (alert_id,)).fetchone()
             cur = conn.execute(
                 """

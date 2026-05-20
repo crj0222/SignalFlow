@@ -127,6 +127,11 @@ class EntryAlertView(discord.ui.View):
                 embed=warning_embed("This trade is no longer open, so it cannot be marked as taken."),
                 ephemeral=True,
             )
+            if interaction.message:
+                try:
+                    await interaction.message.edit(view=None)
+                except discord.HTTPException:
+                    pass
             return
 
         self.db.mark_alert_action(self.alert_id, self.guild_id, interaction.user.id, "took")
@@ -134,6 +139,19 @@ class EntryAlertView(discord.ui.View):
         await interaction.response.send_message(embed=success_embed("Marked as taken and added to your open positions."), ephemeral=True)
 
     @discord.ui.button(label="Manage Alerts", style=discord.ButtonStyle.primary, custom_id="signalflow:manage_alerts")
+    async def manage_alerts(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.send_message("Open your server and use `/select_analysts` to update your alerts.", ephemeral=True)
+
+
+class AutoTakenEntryAlertView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Auto Taken", style=discord.ButtonStyle.success, disabled=True, custom_id="signalflow:auto_taken")
+    async def auto_taken(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Manage Alerts", style=discord.ButtonStyle.primary, custom_id="signalflow:auto_manage_alerts")
     async def manage_alerts(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_message("Open your server and use `/select_analysts` to update your alerts.", ephemeral=True)
 

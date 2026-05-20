@@ -1,4 +1,5 @@
 import logging
+import re
 from dataclasses import replace
 from typing import Optional
 
@@ -8,11 +9,18 @@ from discord.ext import commands
 from commands import admin_commands, owner_commands, user_commands
 from config import load_config
 from database import Database
-from embeds import entry_alert_embed, exit_alert_embed, position_update_embed, review_alert_embed, roll_alert_embed
+from embeds import (
+    closed_entry_alert_embed,
+    entry_alert_embed,
+    exit_alert_embed,
+    position_update_embed,
+    review_alert_embed,
+    roll_alert_embed,
+)
 from models import Analyst, ParsedAlert
-from classifier import classify_alert
+from classifier import IMAGE_EXTENSIONS, classify_alert, classify_image_alert
 from parser import parse_gain_percent
-from views import EntryAlertView, ExitAlertView
+from views import AutoTakenEntryAlertView, EntryAlertView, ExitAlertView
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -25,6 +33,7 @@ class SignalFlowBot(commands.Bot):
         db: Database,
         guild_id: Optional[int],
         owner_ids: set[int],
+        auto_take_user_ids: set[int],
         clear_guild_commands: bool = False,
     ) -> None:
         intents = discord.Intents.default()
@@ -36,6 +45,7 @@ class SignalFlowBot(commands.Bot):
         self.db = db
         self.guild_id = guild_id
         self.owner_ids = owner_ids
+        self.auto_take_user_ids = auto_take_user_ids
         self.clear_guild_commands = clear_guild_commands
 
     async def setup_hook(self) -> None:
@@ -78,6 +88,10 @@ class SignalFlowBot(commands.Bot):
 
         examples = self.db.list_classifier_examples(message.guild.id)
         parsed = await classify_alert(message.content, examples)
+        if not parsed or self._needs_image_context(parsed):
+            image_parsed = await self._classify_image_attachments(message, examples)
+            if image_parsed:
+                parsed = image_parsed
         if not parsed:
             return
         parsed = self._apply_analyst_rule_hooks(analyst, parsed)
@@ -101,6 +115,31 @@ class SignalFlowBot(commands.Bot):
 
         routed = await self.route_alert(message.guild, analyst, parsed, message.channel.id, message.id)
         log.info("Routed %s alert from %s to %s user(s)", parsed.action, analyst.name, routed)
+
+    async def _classify_image_attachments(self, message: discord.Message, examples) -> Optional[ParsedAlert]:
+        for attachment in message.attachments:
+            if not self._is_supported_image_attachment(attachment):
+                continue
+            parsed = await classify_image_alert(attachment.url, message.content, examples)
+            if parsed:
+                return parsed
+        return None
+
+    def _is_supported_image_attachment(self, attachment: discord.Attachment) -> bool:
+        content_type = (attachment.content_type or "").lower()
+        if content_type.startswith("image/"):
+            return True
+        filename = (attachment.filename or "").lower()
+        return filename.endswith(IMAGE_EXTENSIONS)
+
+    def _needs_image_context(self, parsed: ParsedAlert) -> bool:
+        if parsed.confidence == "low":
+            return True
+        if parsed.action in {"trim", "close"}:
+            return parsed.price is None or not (parsed.ticker or parsed.contract)
+        if parsed.action in {"entry", "add", "average_down", "average_up"}:
+            return parsed.price is None or not (parsed.ticker and parsed.contract)
+        return False
 
     async def _send_review_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert) -> None:
         channel_id = self.db.get_review_channel_id(guild.id)
@@ -146,6 +185,17 @@ class SignalFlowBot(commands.Bot):
         # Example later: if analyst.name.lower() == "randumb": return replace(parsed, ...)
         return parsed
 
+    def _should_keep_review_confidence(self, parsed: ParsedAlert) -> bool:
+        raw = (parsed.raw_text or "").strip()
+        upper = raw.upper()
+        if raw.endswith("?") and len(raw) <= 40:
+            return True
+        if re.search(r"\b(MAYBE|POSSIBLE|MIGHT|COULD|NOT SURE)\b", upper):
+            return True
+        has_entry = re.search(r"\b(BTO|BUY(?:ING)?|BOUGHT|ENTER(?:ING|ED)?|OPEN(?:ING)?|GRABB(?:ED|ING)?|FILL(?:ED)?)\b", upper)
+        has_exit = re.search(r"\b(TRIM(?:MED|MING)?|TAK(?:E|ING) (?:A TRIM|PROFITS?)|SOLD|SELL|STC|CLOSE(?:D)?|EXIT(?:ED|ING)?|STOP(?:PED)?|CUT)\b", upper)
+        return bool(has_entry and has_exit)
+
     def _resolve_contextual_alert(self, guild_id: int, analyst_id: int, parsed: ParsedAlert) -> ParsedAlert:
         if parsed.action in {"add", "average_down", "average_up"}:
             entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, parsed.contract)
@@ -161,13 +211,14 @@ class SignalFlowBot(commands.Bot):
             elif action == "add":
                 return replace(parsed, confidence="medium")
 
+            keep_medium = parsed.price is not None and parsed.price > 100 and not parsed.contract
             return replace(
                 parsed,
                 action=action,
                 ticker=parsed.ticker or entry["ticker"],
                 contract=parsed.contract or entry["contract"],
                 expiration=entry["expiration"] or parsed.expiration,
-                confidence=self._confidence_level(parsed.confidence),
+                confidence=self._confidence_level(parsed.confidence) if keep_medium else ("high" if parsed.price is not None else self._confidence_level(parsed.confidence)),
             )
 
         if parsed.action == "roll_option":
@@ -185,8 +236,37 @@ class SignalFlowBot(commands.Bot):
                 old_contract=parsed.old_contract or entry["contract"],
                 old_expiration=parsed.old_expiration or entry["expiration"],
                 old_price=parsed.old_price if parsed.old_price is not None else entry["price"],
-                confidence="medium" if not parsed.contract else self._confidence_level(parsed.confidence),
+                confidence="high" if parsed.contract else self._confidence_level(parsed.confidence),
             )
+
+        if parsed.action in {"trim", "close", "stop", "exit"}:
+            missing_trade_details = not (parsed.ticker or parsed.contract)
+            entry = None
+            if missing_trade_details:
+                entry = self.db.latest_open_entry_alert(guild_id, analyst_id)
+            elif parsed.ticker or parsed.contract:
+                entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, parsed.contract)
+                if not entry and parsed.ticker:
+                    entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, None)
+
+            if entry and parsed.action == "trim":
+                return replace(
+                    parsed,
+                    ticker=parsed.ticker or entry["ticker"],
+                    contract=parsed.contract or entry["contract"],
+                    expiration=entry["expiration"] or parsed.expiration,
+                    confidence="medium" if self._should_keep_review_confidence(parsed) else "high",
+                )
+            if missing_trade_details and entry:
+                return replace(
+                    parsed,
+                    ticker=entry["ticker"],
+                    contract=entry["contract"],
+                    expiration=entry["expiration"],
+                    confidence="medium" if self._should_keep_review_confidence(parsed) else "high",
+                )
+            if parsed.action == "close" and not entry:
+                return replace(parsed, confidence="medium")
 
         return parsed
 
@@ -198,7 +278,14 @@ class SignalFlowBot(commands.Bot):
             if not user:
                 continue
             try:
-                await user.send(embed=embed, view=EntryAlertView(self.db, guild.id, analyst.id, alert_id))
+                if user_id in self.auto_take_user_ids:
+                    sent = await user.send(embed=embed, view=AutoTakenEntryAlertView())
+                    self.db.record_alert_delivery(alert_id, guild.id, user_id, sent.channel.id, sent.id)
+                    self.db.mark_alert_action(alert_id, guild.id, user_id, "auto_took")
+                    self.db.open_position(guild.id, user_id, analyst.id, alert_id)
+                else:
+                    sent = await user.send(embed=embed, view=EntryAlertView(self.db, guild.id, analyst.id, alert_id))
+                    self.db.record_alert_delivery(alert_id, guild.id, user_id, sent.channel.id, sent.id)
                 routed += 1
             except discord.Forbidden:
                 log.warning("Cannot DM user %s; DMs may be closed", user_id)
@@ -304,6 +391,7 @@ class SignalFlowBot(commands.Bot):
                 log.warning("Cannot DM user %s; DMs may be closed", user_id)
             except discord.HTTPException:
                 log.exception("Failed to DM roll alert to user %s", user_id)
+        await self._edit_entry_deliveries_closed(guild, analyst, old_entry, "roll_option")
         return routed
 
     def _trim_gain_pct(self, entry_price: Optional[float], trim_price: Optional[float]) -> Optional[float]:
@@ -311,16 +399,70 @@ class SignalFlowBot(commands.Bot):
             return None
         return ((trim_price - entry_price) / entry_price) * 100
 
+    def _price_from_gain_pct(self, entry_price: Optional[float], gain_pct: Optional[float]) -> Optional[float]:
+        if entry_price is None or gain_pct is None or entry_price <= 0:
+            return None
+        return round(entry_price * (1 + (gain_pct / 100)), 2)
+
     def _entry_to_display_alert(self, parsed: ParsedAlert, entry) -> ParsedAlert:
+        trade_note = parsed.trade_note if parsed.action == "trim" else (parsed.trade_note or entry["trade_note"])
         return replace(
             parsed,
             ticker=entry["ticker"],
             contract=entry["contract"],
             expiration=entry["expiration"],
             price=parsed.price if parsed.price is not None else entry["price"],
-            trade_note=entry["trade_note"] or parsed.trade_note,
+            trade_note=trade_note,
             confidence="normal",
         )
+
+    def _entry_row_to_parsed_alert(self, entry) -> ParsedAlert:
+        return ParsedAlert(
+            action="entry",
+            confidence=entry["confidence"] or "normal",
+            ticker=entry["ticker"],
+            contract=entry["contract"],
+            expiration=entry["expiration"],
+            price=entry["price"],
+            raw_text=entry["raw_text"] or "",
+            trade_note=entry["trade_note"],
+        )
+
+    async def _edit_entry_deliveries_closed(
+        self,
+        guild: discord.Guild,
+        analyst: Analyst,
+        analyst_entry,
+        close_action: str,
+    ) -> None:
+        deliveries = self.db.list_alert_deliveries(analyst_entry["id"], status="active")
+        if not deliveries:
+            return
+
+        embed = closed_entry_alert_embed(
+            analyst,
+            self._entry_row_to_parsed_alert(analyst_entry),
+            close_action=close_action,
+            guild_name=guild.name,
+            logo_url=self._logo_url(),
+        )
+        delivery_status = "rolled" if close_action == "roll_option" else "closed"
+
+        for delivery in deliveries:
+            try:
+                user = self.get_user(delivery["user_id"]) or await self.fetch_user(delivery["user_id"])
+                channel = user.dm_channel or await user.create_dm()
+                message = await channel.fetch_message(delivery["dm_message_id"])
+                await message.edit(embed=embed, view=None)
+                self.db.mark_alert_delivery_status(delivery["id"], delivery_status)
+            except discord.NotFound:
+                self.db.mark_alert_delivery_status(delivery["id"], "missing")
+            except discord.Forbidden:
+                self.db.mark_alert_delivery_status(delivery["id"], "forbidden")
+                log.warning("Cannot edit stale entry DM for user %s", delivery["user_id"])
+            except discord.HTTPException:
+                self.db.mark_alert_delivery_status(delivery["id"], "edit_failed")
+                log.exception("Failed to edit stale entry DM for user %s", delivery["user_id"])
 
     async def _route_exit_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
         routed = 0
@@ -333,6 +475,8 @@ class SignalFlowBot(commands.Bot):
             analyst_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, lookup_ticker, lookup_contract)
             if closes_analyst_trade and not analyst_entry:
                 return 0
+        if closes_analyst_trade and analyst_entry:
+            self.db.close_entry_alert(analyst_entry["id"])
 
         for user_id in self.db.subscribed_users(guild.id, analyst.id):
             if analyst_entry:
@@ -364,6 +508,10 @@ class SignalFlowBot(commands.Bot):
             gain_pct = self._trim_gain_pct(basis_price, gain_price) if parsed.action in exit_actions else None
             if gain_pct is None and parsed.action in exit_actions:
                 gain_pct = parse_gain_percent(parsed.raw_text)
+            if parsed.price is None and gain_pct is not None:
+                estimated_price = self._price_from_gain_pct(basis_price, gain_pct)
+                if estimated_price is not None:
+                    display_parsed = replace(display_parsed, price=estimated_price)
             try:
                 await user.send(
                     embed=exit_alert_embed(
@@ -384,7 +532,7 @@ class SignalFlowBot(commands.Bot):
             except discord.HTTPException:
                 log.exception("Failed to DM trim/exit alert to user %s", user_id)
         if closes_analyst_trade and analyst_entry:
-            self.db.close_entry_alert(analyst_entry["id"])
+            await self._edit_entry_deliveries_closed(guild, analyst, analyst_entry, parsed.action)
         return routed
 
 
@@ -395,6 +543,7 @@ def main() -> None:
         db=db,
         guild_id=config.guild_id,
         owner_ids=config.owner_ids,
+        auto_take_user_ids=config.auto_take_user_ids,
         clear_guild_commands=config.clear_guild_commands,
     )
     bot.run(config.token)

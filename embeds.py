@@ -137,6 +137,38 @@ def entry_alert_embed(
     return embed
 
 
+def closed_entry_alert_embed(
+    analyst: Analyst,
+    parsed: ParsedAlert,
+    close_action: Optional[str] = None,
+    guild_name: Optional[str] = None,
+    logo_url: Optional[str] = None,
+) -> discord.Embed:
+    status_map = {
+        "stop": "Stopped out by analyst",
+        "close": "Closed by analyst",
+        "exit": "Closed by analyst",
+        "roll_option": "Rolled by analyst",
+    }
+    title_map = {
+        "stop": "Stopped Out",
+        "roll_option": "Option Rolled",
+    }
+    status = status_map.get((close_action or "").lower(), "No longer active")
+    color = LOSS_COLOR if close_action == "stop" else MUTED_COLOR
+    embed = discord.Embed(
+        title=title_map.get((close_action or "").lower(), "Trade Closed"),
+        description=f"**{_trade_line(parsed)}**\nThis entry alert is no longer active.",
+        color=color,
+    )
+    embed.add_field(name="Entry", value=_price_line(parsed), inline=True)
+    embed.add_field(name="Status", value=status, inline=True)
+    embed.add_field(name="Analyst", value=analyst.name, inline=True)
+    _add_server(embed, guild_name)
+    _set_footer(embed, logo_url)
+    return embed
+
+
 def exit_alert_embed(
     analyst: Analyst,
     parsed: ParsedAlert,
@@ -147,7 +179,7 @@ def exit_alert_embed(
 ) -> discord.Embed:
     if parsed.action == "trim":
         title = "⚠️ Possible Trim Alert" if possible else "🔔 Trim Alert"
-        top_note = "Trim update"
+        top_note = _value(parsed.trade_note)
     else:
         title = "⚠️ Possible Close Alert" if possible else "🔔 Trade Closed"
         top_note = "Position closed"
@@ -155,9 +187,13 @@ def exit_alert_embed(
     if parsed.action != "trim" and gain_pct is not None:
         color = SUCCESS_COLOR if gain_pct >= 0 else LOSS_COLOR
 
+    description = f"**{_trade_line(parsed)}**"
+    if top_note != "Not detected":
+        description = f"{description}\n{top_note}"
+
     embed = discord.Embed(
         title=title,
-        description=f"**{_trade_line(parsed)}**\n{top_note}",
+        description=description,
         color=color,
     )
     embed.add_field(name="Price", value=_price_line(parsed), inline=True)

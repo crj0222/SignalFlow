@@ -7,19 +7,42 @@ from datetime import datetime
 from typing import Any, Iterable, Optional
 
 from models import ParsedAlert
-from parser import normalize_contract, parse_alert, parse_price, parse_roll_cost, parse_trade_note
+from parser import (
+    COMMON_NON_TICKERS,
+    apply_default_expiration_and_note,
+    current_week_friday_expiration,
+    normalize_contract,
+    parse_alert,
+    parse_position_note,
+    parse_price,
+    parse_roll_cost,
+    parse_trade_note,
+)
 
 
 CLASSIFIER_MODEL = os.getenv("OPENAI_CLASSIFIER_MODEL", "gpt-4o-mini")
 AI_ENABLED = os.getenv("USE_AI_CLASSIFIER", "true").lower() in {"1", "true", "yes", "on"}
+IMAGE_AI_ENABLED = os.getenv("USE_IMAGE_CLASSIFIER", "true").lower() in {"1", "true", "yes", "on"}
 CLASSIFIER_TIMEOUT = float(os.getenv("OPENAI_CLASSIFIER_TIMEOUT_SECONDS", "8"))
 log = logging.getLogger("signalflow.classifier")
 _client = None
 MAX_EXAMPLES_PER_ACTION = 6
 CLASSIFIER_ACTIONS = ("entry", "add", "average_down", "average_up", "trim", "close", "roll_option", "ignore")
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def _is_gpt5_model(model: str) -> bool:
+    return model.lower().startswith("gpt-5")
+
+
+def _completion_token_limit(model: str) -> int:
+    # GPT-5 reasoning models may spend part of this budget on reasoning before JSON output.
+    return 500 if _is_gpt5_model(model) else 180
 
 
 LOCAL_CONFIDENCE_WORDS = (
+    "B/E",
+    "BREAKEVEN",
     "BTO",
     "BUYING",
     "BOUGHT",
@@ -49,6 +72,9 @@ AI_CANDIDATE_WORDS = (
     "AVERAGE",
     "AVERAGED",
     "AVERAGING",
+    "B/E",
+    "AT BE",
+    "BREAKEVEN",
     "BTO",
     "BUY",
     "BOUGHT",
@@ -109,27 +135,35 @@ OBVIOUS_CHATTER = {
 
 SYSTEM_PROMPT = """
 Classify a Discord trading alert. Return only JSON:
-{"action":"entry|add|average_down|average_up|trim|close|roll_option|ignore","ticker":null,"contract":null,"expiration":null,"price":null,"old_contract":null,"old_expiration":null,"roll_cost":null,"roll_cost_type":null,"trade_note":null,"confidence":"high|medium|low"}
-trade_note should be "Half Size", "Light", "Lotto", "Swing", "0DTE", "Day Trade", a slash-combo like "Light / Lotto", or null. Only use "Day Trade" if the message explicitly says day trade/daytrade/scalp/intraday.
-entry=taking/filled/bought/opening/grabbing/starting a new position now. add=adding/reloading/averaging into an existing position when you cannot know from text whether the add is up or down. average_down=explicit averaging down. average_up=explicit averaging up. trim=partial scale out/trim/sell some while keeping runners. close=fully closed/all out/sold/STC/stopped out/cut/breakeven exit/invalidated. roll_option=rolling from one option contract to another. ignore=watchlist/idea/maybe/recap/uncertain/chat.
-Extract ticker, option contract like 530C, expiration like 5/24, and price. Do not invent missing details. If trim/close/add/roll lacks ticker or contract, use confidence="medium" unless the wording clearly points to the analyst's most recent position.
+{"action":"entry|add|average_down|average_up|trim|close|roll_option|ignore","ticker":null,"contract":null,"expiration":null,"price":null,"old_contract":null,"old_expiration":null,"roll_cost":null,"roll_cost_type":null,"trade_note":null,"visible_text":null,"confidence":"high|medium|low"}
+For entry/add/average alerts, trade_note should be "Half Size", "Light", "Lotto", "Swing", "0DTE", "Day Trade", a slash-combo like "Swing / Half Size", or null. Only use "Day Trade" if the message explicitly says day trade/daytrade/scalp/intraday. For trim alerts, trade_note should be one clean current-position label such as "Half Position", "1/3 Position", "1/4 Position", "Runners", "Risk Free", "Majority Trimmed", or null. Do not mix entry sizing notes like Light/Half Size into trim trade_note.
+entry=taking/filled/bought/opening/grabbing/starting a new position now. add=adding/reloading/averaging into an existing position when you cannot know from text whether the add is up or down. average_down=explicit averaging down. average_up=explicit averaging up. trim=partial scale out/trim/sell some while keeping runners. close=fully closed/all out/sold/STC/stopped out/cut/breakeven/B/E/at even exit/invalidated. roll_option=rolling from one option contract to another. ignore=watchlist/idea/maybe/recap/uncertain/chat.
+Extract ticker, option contract like 530C, expiration like 5/24, and price. Do not invent missing details. If trim/close/add/roll lacks ticker or contract, use confidence="medium" unless the wording clearly points to the analyst's most recent position. Short messages like "added to SPY @.7" are add alerts and should use the latest open SPY position. Short messages like "exiting trade at B/E" are close alerts for the latest open position.
+If the message says weeklies/weekly/wkly, expiration means the Friday of the current week.
+Lines like "Ticker: QQQ" explicitly identify the ticker. Possessive labels like "Expo's Trim" are analyst/template labels, not tickers.
 Use confidence high only when this is clearly an executable alert/update now. Use medium for ambiguous but possibly actionable messages that need review. Use low for weak/uncertain messages. Prioritize avoiding false alerts.
 Price means the option fill/entry/trim/close price, such as "@ 1.20", "at .95", "paid 1.35", "avg 1.10", "filled 2.40", "Entry: 4.20-4.30", or a decimal right after the contract. For entry ranges, use the first number. For trim/close ranges like "1.50 - 1.90", use the second/current price.
+Trim ladder lines like "3.1 - trim" or "3.5 - 50%" are trim alerts for the analyst's most recent position. In "3.5 - 50%", 3.5 is the trim price and 50% is position size, not profit. Only treat a percent as gain/loss when it has a sign like "+50%" or wording like gain/profit/loss/down.
+For screenshots/images, put the important OCR text you can read in visible_text, especially ticker, expiration/contract text, and percentages. Image cards like "SPX (SPXW) May19..." with a green "184.5%" are trim/update alerts for the most recent matching SPX position; set action="trim", ticker="SPX", price=null, visible_text with "SPX ... 184.5%", and confidence="medium" unless the caption clearly says trim/close.
 If a message starts with a style label like "Day Trade:", "Lotto:", "Swing:", or "Light:", that label is not the ticker. The ticker is the symbol next to the contract, e.g. "Day Trade: SPY 770c May 29 @.36" has ticker SPY.
 Role pings and author tags like "@Waxui Alerts", "@Are Ping", and "@Scott Alerts" are not tickers.
 Important: a terse message with ticker + option contract + price, like "SPX 7385C - 3.5", is an entry unless it says watching/possible/maybe/idea/looking for/not in.
 Trade ideas, setups, watchlists, "looking for", "watching", "eyeing", "on radar", "potential", "possible", "waiting for", "love the contract", "will alert entry", "if/over/under trigger" are ignore unless the message clearly says the analyst entered, bought, took, grabbed, filled, sold, trimmed, closed, or stopped right now.
-Common current-entry words include BTO, STO, bought, buying, entered, entering, taking, took, grabbed, filled, opening, starter, long. Common add words include add, added, adding, reload, reloaded, averaging, average down, average up, back in. Common trim words include trim, trimmed, scale out, reduced risk, down to runners, down to 1/3 position, take a trim, take profits. Common close words include closed, sold, STC, all out, exited, stopped out, stop hit, cut here, breakeven, at even, invalidated. Common roll words include roll, rolling, rolled, roll these back/out/forward.
+Common current-entry words include BTO, STO, bought, buying, entered, entering, taking, took, grabbed, filled, opening, starter, long. Common add words include add, added, adding, added to, reload, reloaded, averaging, average down, average up, back in. Common trim words include trim, trimmed, scale out, reduced risk, down to runners, down to 1/3 position, take a trim, take profits. Common close words include closed, sold, STC, all out, exited, exiting, stopped out, stop hit, cut here, breakeven, B/E, at even, invalidated. Common roll words include roll, rolling, rolled, roll these back/out/forward.
 Formats seen in real analyst feeds:
 - "@Waxui Alerts *High Risk* | SPY here | 03/10 677P | Avg, 2.25" is an entry.
 - "OPEN $NAVN $20 call 6/18 @ 1.80 (swing, half sized for now)" is an entry.
 - "Adding NVDA 225C @ 2.10" is add unless it explicitly says average down/up.
+- "added to SPY @.7" is add for the latest open SPY position.
 - "Averaging down SPY 530C at .80" is average_down.
 - "Adding higher on runners, SPY 530C @ 1.50" is add.
 - "Trim SPY here | 1.50 - 1.90 | 27%" is a trim; use 1.90 as the trim price.
+- "3.1 - trim\n3.5 - 50%" is a trim with price=3.5 and trade_note="Half Position"; ticker/contract can be null with medium confidence because it refers to the most recent position.
+- Image/screenshot showing "SPX (SPXW) May19..." and "184.5%" is a trim/update; ticker=SPX, price=null, visible_text should include "184.5%" so gain math can use it.
 - "Closed SPY here" is close.
 - "Stopped out of SPX" is close.
 - "Cutting here at breakeven" is close.
+- "exiting trade at B/E" is close for the latest open position.
 - "+20% here on $SOFI calls, take a trim" is a trim.
 - "down to 1/3 position MSFT @1.4" is a trim, not an entry.
 - "Rolling SPY 5/24 530C to 5/31 540C for .25 debit" is roll_option; old_contract=530C, old_expiration=5/24, contract=540C, expiration=5/31, roll_cost=.25, roll_cost_type=debit.
@@ -186,28 +220,90 @@ def _has_phrase(text: str, phrase: str) -> bool:
 
 
 def _sanitize(parsed: Optional[ParsedAlert], content: str) -> Optional[ParsedAlert]:
-    return None if (_looks_forward_only(content, parsed) or _invalid_entry(parsed)) else parsed
+    if _looks_forward_only(content, parsed) or _invalid_entry(parsed):
+        return None
+    if not parsed:
+        return None
+
+    stripped = content.strip()
+    upper = stripped.upper()
+    if stripped.endswith("?") and len(stripped) <= 40:
+        return replace(parsed, confidence="medium")
+
+    has_entry_now = any(_has_phrase(upper, phrase) for phrase in ENTRY_NOW_PHRASES)
+    has_exit_now = any(
+        _has_phrase(upper, phrase)
+        for phrase in (
+            "TRIM",
+            "TRIMMED",
+            "TAKING A TRIM",
+            "TAKE PROFITS",
+            "TAKING PROFITS",
+            "SOLD",
+            "SELL",
+            "STC",
+            "CLOSE",
+            "CLOSED",
+            "EXIT",
+            "STOPPED OUT",
+            "STOP HIT",
+            "CUT",
+        )
+    )
+    if has_entry_now and has_exit_now:
+        return replace(parsed, confidence="medium")
+
+    if parsed.action in {"add", "average_down", "average_up"} and parsed.price and parsed.price > 100 and not parsed.contract:
+        return replace(parsed, confidence="medium")
+
+    return parsed
 
 
 def _prefer_local_exit_action(parsed: Optional[ParsedAlert], content: str) -> Optional[ParsedAlert]:
-    if not parsed or parsed.action != "entry":
+    local = parse_alert(content)
+    if not parsed:
+        if local and local.action in {"add", "average_down", "average_up", "trim", "close", "roll_option"}:
+            return local
+        return None
+
+    if not parsed:
         return parsed
 
-    local = parse_alert(content)
-    if not local or local.action not in {"add", "average_down", "average_up", "trim", "close", "roll_option"}:
+    if (
+        parsed.action in {"add", "average_down", "average_up"}
+        and local
+        and local.action == "entry"
+        and re.search(r"\b(?:BTO|BUY(?:ING)?|BOUGHT|ENTER(?:ING|ED)?|OPEN(?:ING)?|GRABB(?:ED|ING)?|FILL(?:ED)?)\b", content, re.IGNORECASE)
+    ):
+        return local
+    if parsed.action == "close" and local and local.action == "trim":
+        return local
+
+    actionable_local = local and local.action in {"add", "average_down", "average_up", "trim", "close", "roll_option"}
+    if not actionable_local:
+        return parsed
+
+    should_prefer_local = (
+        parsed.action == "entry"
+        or parsed.confidence != "high"
+        or (not parsed.ticker and local.ticker)
+        or (parsed.price is None and local.price is not None)
+        or (parsed.action == local.action and parsed.contract is None and local.contract is not None)
+    )
+    if not should_prefer_local:
         return parsed
 
     return replace(
         parsed,
         action=local.action,
-        confidence=local.confidence,
-        ticker=parsed.ticker or local.ticker,
-        contract=parsed.contract or local.contract,
-        expiration=parsed.expiration or local.expiration,
+        confidence="high" if local.confidence == "high" else parsed.confidence,
+        ticker=local.ticker or parsed.ticker,
+        contract=local.contract or parsed.contract,
+        expiration=local.expiration or parsed.expiration,
         price=local.price if local.price is not None else parsed.price,
-        trade_note=parsed.trade_note or local.trade_note,
-        old_contract=parsed.old_contract or local.old_contract,
-        old_expiration=parsed.old_expiration or local.old_expiration,
+        trade_note=local.trade_note or parsed.trade_note,
+        old_contract=local.old_contract or parsed.old_contract,
+        old_expiration=local.old_expiration or parsed.old_expiration,
         roll_cost=parsed.roll_cost if parsed.roll_cost is not None else local.roll_cost,
         roll_cost_type=parsed.roll_cost_type or local.roll_cost_type,
     )
@@ -251,6 +347,13 @@ def _coerce_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_ticker(value: Any) -> Optional[str]:
+    ticker = str(value or "").upper().strip().lstrip("$")
+    if not ticker or ticker.lower() in {"null", "none", "n/a", "na"}:
+        return None
+    return None if ticker in COMMON_NON_TICKERS else ticker
 
 
 def today_expiration() -> str:
@@ -313,7 +416,9 @@ def _parsed_from_payload(content: str, payload: dict[str, Any]) -> Optional[Pars
     if confidence not in {"high", "medium", "low"}:
         confidence = "medium"
 
-    expiration = str(payload["expiration"]).strip() if payload.get("expiration") else today_expiration()
+    expiration = str(payload["expiration"]).strip() if payload.get("expiration") else None
+    if re.search(r"\b(WEEKLIES|WEEKLY|WKLY|WEEKLYS)\b", content, flags=re.IGNORECASE):
+        expiration = current_week_friday_expiration()
 
     contract = normalize_contract(str(payload["contract"]).upper().strip()) if payload.get("contract") else None
     old_contract = normalize_contract(str(payload["old_contract"]).upper().strip()) if payload.get("old_contract") else None
@@ -326,16 +431,23 @@ def _parsed_from_payload(content: str, payload: dict[str, Any]) -> Optional[Pars
         roll_cost, roll_cost_type = parse_roll_cost(content)
     if action == "roll_option" and roll_cost_type and price == roll_cost:
         price = None
-    trade_note = _coerce_trade_note(payload.get("trade_note"), content)
+    if action in {"trim", "close"}:
+        trade_note = _coerce_position_note(payload.get("trade_note"), content)
+    else:
+        trade_note = _coerce_trade_note(payload.get("trade_note"), content)
+    expiration, trade_note = apply_default_expiration_and_note(action, expiration, trade_note)
+
+    visible_text = str(payload.get("visible_text") or "").strip()
+    raw_text = "\n".join(part for part in [content.strip(), visible_text] if part)
 
     return ParsedAlert(
         action=action,
         confidence=confidence,
-        ticker=str(payload["ticker"]).upper().strip() if payload.get("ticker") else None,
+        ticker=_coerce_ticker(payload.get("ticker")),
         contract=contract,
         expiration=expiration,
         price=price if price is not None else parse_price(content, contract),
-        raw_text=content.strip(),
+        raw_text=raw_text,
         trade_note=trade_note,
         old_contract=old_contract,
         old_expiration=str(payload["old_expiration"]).strip() if payload.get("old_expiration") else None,
@@ -345,36 +457,126 @@ def _parsed_from_payload(content: str, payload: dict[str, Any]) -> Optional[Pars
 
 
 def _coerce_trade_note(value: Any, content: str) -> str:
+    local_note = parse_trade_note(content)
     if value in (None, ""):
-        return parse_trade_note(content)
+        return local_note
     note = str(value).strip()
     if not note or note.lower() in {"null", "none", "n/a", "na"}:
-        return parse_trade_note(content)
-    return note
+        return local_note
+
+    merged = []
+    for part in [*local_note.split(" / "), *note.split(" / ")]:
+        clean = part.strip()
+        if clean and clean not in merged:
+            merged.append(clean)
+    return " / ".join(merged)
+
+
+def _merge_notes(*notes: Optional[str]) -> str:
+    merged = []
+    for note in notes:
+        for part in (note or "").split(" / "):
+            clean = part.strip()
+            if clean and clean not in merged:
+                merged.append(clean)
+    return " / ".join(merged)
+
+
+def _coerce_position_note(value: Any, content: str) -> str:
+    local_note = parse_position_note(content)
+    if local_note:
+        return local_note
+
+    allowed = {
+        "half position": "Half Position",
+        "1/2 position": "Half Position",
+        "one half position": "Half Position",
+        "1/3 position": "1/3 Position",
+        "one third position": "1/3 Position",
+        "1/4 position": "1/4 Position",
+        "one quarter position": "1/4 Position",
+        "runners": "Runners",
+        "runner": "Runners",
+        "risk free": "Risk Free",
+        "risk-free": "Risk Free",
+        "majority trimmed": "Majority Trimmed",
+    }
+    note = str(value or "").strip().lower()
+    for part in note.split("/"):
+        clean = part.strip()
+        if clean in allowed:
+            return allowed[clean]
+    return ""
 
 
 async def _classify_with_openai(content: str, examples: Optional[Iterable[Any]] = None) -> Optional[ParsedAlert]:
     client = _get_client()
     current_expiration = today_expiration()
     examples_prompt = _format_examples(examples)
-    response = await client.chat.completions.create(
-        model=CLASSIFIER_MODEL,
-        response_format={"type": "json_object"},
-        temperature=0,
-        max_completion_tokens=180,
-        messages=[
+    request: dict[str, Any] = {
+        "model": CLASSIFIER_MODEL,
+        "response_format": {"type": "json_object"},
+        "max_completion_tokens": _completion_token_limit(CLASSIFIER_MODEL),
+        "messages": [
             {
                 "role": "system",
                 "content": (
                     f"{SYSTEM_PROMPT}{examples_prompt}\n"
-                    f"If no expiration is explicitly listed, use today's date: {current_expiration}."
+                    f"If no expiration is explicitly listed for an entry/add/average alert, use today's date: {current_expiration}, "
+                    "and include Day Trade in trade_note unless another explicit duration is present."
                 ),
             },
             {"role": "user", "content": content},
         ],
-    )
+    }
+    if not _is_gpt5_model(CLASSIFIER_MODEL):
+        request["temperature"] = 0
+
+    response = await client.chat.completions.create(**request)
     payload = json.loads(response.choices[0].message.content or "{}")
     return _parsed_from_payload(content, payload)
+
+
+async def _classify_image_with_openai(
+    image_url: str,
+    caption: str = "",
+    examples: Optional[Iterable[Any]] = None,
+) -> Optional[ParsedAlert]:
+    client = _get_client()
+    current_expiration = today_expiration()
+    examples_prompt = _format_examples(examples)
+    text = caption.strip() or "No message text. Classify the trading alert visible in this screenshot/image."
+    request: dict[str, Any] = {
+        "model": CLASSIFIER_MODEL,
+        "response_format": {"type": "json_object"},
+        "max_completion_tokens": _completion_token_limit(CLASSIFIER_MODEL),
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    f"{SYSTEM_PROMPT}{examples_prompt}\n"
+                    "You may receive a screenshot/image from Discord. Read the visible text in the image and classify it. "
+                    "If the image is a trim/close/update card with ticker and price, classify it as the matching alert. "
+                    "Ignore chart-only screenshots or images without clear trading-alert text.\n"
+                    f"If no expiration is explicitly listed for an entry/add/average alert, use today's date: {current_expiration}, "
+                    "and include Day Trade in trade_note unless another explicit duration is present."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": text},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            },
+        ],
+    }
+    if not _is_gpt5_model(CLASSIFIER_MODEL):
+        request["temperature"] = 0
+
+    response = await client.chat.completions.create(**request)
+    payload = json.loads(response.choices[0].message.content or "{}")
+    return _parsed_from_payload(caption or "[image alert]", payload)
 
 
 async def classify_alert(content: str, examples: Optional[Iterable[Any]] = None) -> Optional[ParsedAlert]:
@@ -397,3 +599,25 @@ async def classify_alert(content: str, examples: Optional[Iterable[Any]] = None)
             return _sanitize(parse_alert(content), content)
 
     return _sanitize(parse_alert(content), content)
+
+
+async def classify_image_alert(
+    image_url: str,
+    caption: str = "",
+    examples: Optional[Iterable[Any]] = None,
+) -> Optional[ParsedAlert]:
+    """Classify a Discord image attachment when the alert text is inside the image."""
+    if not IMAGE_AI_ENABLED or not AI_ENABLED or not os.getenv("OPENAI_API_KEY", "").strip():
+        return None
+
+    try:
+        parsed = await _classify_image_with_openai(image_url, caption, examples)
+        return _sanitize(_prefer_local_exit_action(parsed, caption), caption or "[image alert]")
+    except Exception as exc:
+        log.warning(
+            "Image AI classification unavailable. Error=%s Reason=%r",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        return None
