@@ -44,8 +44,7 @@ class Database:
                     guild_id INTEGER NOT NULL,
                     analyst_id INTEGER NOT NULL,
                     channel_id INTEGER NOT NULL,
-                    PRIMARY KEY(guild_id, analyst_id),
-                    UNIQUE(guild_id, channel_id),
+                    PRIMARY KEY(guild_id, channel_id),
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE,
                     FOREIGN KEY(analyst_id) REFERENCES analysts(id) ON DELETE CASCADE
                 );
@@ -69,6 +68,7 @@ class Database:
                     entry_alert_id INTEGER,
                     current_alert_id INTEGER,
                     ticker TEXT,
+                    asset_type TEXT NOT NULL DEFAULT 'option',
                     contract TEXT,
                     expiration TEXT,
                     entry_price REAL,
@@ -90,6 +90,7 @@ class Database:
                     action TEXT NOT NULL,
                     confidence TEXT NOT NULL DEFAULT 'normal',
                     ticker TEXT,
+                    asset_type TEXT NOT NULL DEFAULT 'option',
                     contract TEXT,
                     expiration TEXT,
                     price REAL,
@@ -116,6 +117,7 @@ class Database:
                     alert_id INTEGER,
                     event_type TEXT NOT NULL,
                     ticker TEXT,
+                    asset_type TEXT NOT NULL DEFAULT 'option',
                     old_contract TEXT,
                     old_expiration TEXT,
                     old_price REAL,
@@ -180,12 +182,14 @@ class Database:
                     UNIQUE(guild_id, action, filename),
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
                 );
+
                 """
             )
             self._ensure_column(conn, "analysts", "discord_user_id", "INTEGER")
             self._ensure_column(conn, "guilds", "is_active", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(conn, "guilds", "disabled_reason", "TEXT")
             self._ensure_column(conn, "alert_logs", "trade_note", "TEXT")
+            self._ensure_column(conn, "alert_logs", "asset_type", "TEXT NOT NULL DEFAULT 'option'")
             self._ensure_column(conn, "alert_logs", "status", "TEXT NOT NULL DEFAULT 'open'")
             self._ensure_column(conn, "alert_logs", "old_contract", "TEXT")
             self._ensure_column(conn, "alert_logs", "old_expiration", "TEXT")
@@ -194,13 +198,74 @@ class Database:
             self._ensure_column(conn, "alert_logs", "roll_cost_type", "TEXT")
             self._ensure_column(conn, "alert_logs", "parent_alert_id", "INTEGER")
             self._ensure_column(conn, "user_positions", "current_alert_id", "INTEGER")
+            self._ensure_column(conn, "user_positions", "asset_type", "TEXT NOT NULL DEFAULT 'option'")
             self._ensure_column(conn, "user_positions", "average_price", "REAL")
             self._ensure_column(conn, "user_positions", "add_count", "INTEGER NOT NULL DEFAULT 1")
+            self._ensure_column(conn, "position_events", "asset_type", "TEXT NOT NULL DEFAULT 'option'")
+            self._ensure_multi_channel_table(conn)
+            self._ensure_indexes(conn)
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in columns:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    def _ensure_indexes(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_analysts_guild_active_name
+                ON analysts(guild_id, is_active, name);
+
+            CREATE INDEX IF NOT EXISTS idx_analysts_guild_discord_user
+                ON analysts(guild_id, discord_user_id);
+
+            CREATE INDEX IF NOT EXISTS idx_analyst_channels_lookup
+                ON analyst_channels(guild_id, channel_id);
+
+            CREATE INDEX IF NOT EXISTS idx_user_subscriptions_routing
+                ON user_subscriptions(guild_id, analyst_id, is_paused, user_id);
+
+            CREATE INDEX IF NOT EXISTS idx_alert_logs_open_lookup
+                ON alert_logs(guild_id, analyst_id, action, status, ticker, asset_type, contract, created_at, id);
+
+            CREATE INDEX IF NOT EXISTS idx_user_positions_open_lookup
+                ON user_positions(guild_id, user_id, analyst_id, status, ticker, asset_type, contract);
+
+            CREATE INDEX IF NOT EXISTS idx_alert_deliveries_status
+                ON alert_deliveries(alert_id, status);
+
+            CREATE INDEX IF NOT EXISTS idx_classifier_examples_guild_action
+                ON classifier_examples(guild_id, action, id);
+            """
+        )
+
+    def _ensure_multi_channel_table(self, conn: sqlite3.Connection) -> None:
+        pk_columns = [
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(analyst_channels)").fetchall()
+            if row["pk"]
+        ]
+        if pk_columns == ["guild_id", "channel_id"]:
+            return
+
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS analyst_channels_new (
+                guild_id INTEGER NOT NULL,
+                analyst_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                PRIMARY KEY(guild_id, channel_id),
+                FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE,
+                FOREIGN KEY(analyst_id) REFERENCES analysts(id) ON DELETE CASCADE
+            );
+
+            INSERT OR IGNORE INTO analyst_channels_new (guild_id, analyst_id, channel_id)
+            SELECT guild_id, analyst_id, channel_id FROM analyst_channels;
+
+            DROP TABLE analyst_channels;
+            ALTER TABLE analyst_channels_new RENAME TO analyst_channels;
+            """
+        )
 
     def _row_to_analyst(self, row: sqlite3.Row) -> Analyst:
         return Analyst(
@@ -407,16 +472,9 @@ class Database:
             ).fetchone()
             conn.execute(
                 """
-                DELETE FROM analyst_channels
-                WHERE guild_id = ? AND channel_id = ? AND analyst_id != ?
-                """,
-                (guild_id, channel_id, analyst_id),
-            )
-            conn.execute(
-                """
                 INSERT INTO analyst_channels (guild_id, analyst_id, channel_id)
                 VALUES (?, ?, ?)
-                ON CONFLICT(guild_id, analyst_id) DO UPDATE SET channel_id = excluded.channel_id
+                ON CONFLICT(guild_id, channel_id) DO UPDATE SET analyst_id = excluded.analyst_id
                 """,
                 (guild_id, analyst_id, channel_id),
             )
@@ -438,11 +496,11 @@ class Database:
         with self.connect() as conn:
             return conn.execute(
                 """
-                SELECT a.name, ac.channel_id
+                SELECT a.id AS analyst_id, a.name, ac.channel_id
                 FROM analyst_channels ac
                 JOIN analysts a ON a.id = ac.analyst_id
                 WHERE ac.guild_id = ? AND a.is_active = 1
-                ORDER BY a.name
+                ORDER BY a.name, ac.channel_id
                 """,
                 (guild_id,),
             ).fetchall()
@@ -531,6 +589,35 @@ class Database:
         with self.connect() as conn:
             row = conn.execute(query, params).fetchone()
         return int(row["count"] if row else 0)
+
+    def count_open_entry_alerts_by_analyst(self, guild_id: int) -> dict[int, int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT analyst_id, COUNT(*) AS count
+                FROM alert_logs
+                WHERE guild_id = ?
+                AND action IN ('entry', 'roll_option')
+                AND COALESCE(status, 'open') = 'open'
+                GROUP BY analyst_id
+                """,
+                (guild_id,),
+            ).fetchall()
+        return {int(row["analyst_id"]): int(row["count"]) for row in rows}
+
+    def count_open_user_positions_by_analyst(self, guild_id: int) -> dict[int, int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT analyst_id, COUNT(*) AS count
+                FROM user_positions
+                WHERE guild_id = ?
+                AND status = 'open'
+                GROUP BY analyst_id
+                """,
+                (guild_id,),
+            ).fetchall()
+        return {int(row["analyst_id"]): int(row["count"]) for row in rows}
 
     def add_classifier_example(self, guild_id: int, action: str, example_text: str) -> int:
         self.ensure_guild(guild_id)
@@ -645,10 +732,10 @@ class Database:
                 INSERT INTO alert_logs
                 (
                     guild_id, analyst_id, channel_id, message_id, action, confidence,
-                    ticker, contract, expiration, price, old_contract, old_expiration,
+                    ticker, asset_type, contract, expiration, price, old_contract, old_expiration,
                     old_price, roll_cost, roll_cost_type, trade_note, raw_text
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     guild_id,
@@ -658,6 +745,7 @@ class Database:
                     parsed.action,
                     parsed.confidence,
                     parsed.ticker,
+                    parsed.asset_type,
                     parsed.contract,
                     parsed.expiration,
                     parsed.price,
@@ -733,6 +821,7 @@ class Database:
         analyst_id: int,
         ticker: Optional[str] = None,
         contract: Optional[str] = None,
+        asset_type: Optional[str] = None,
     ) -> Optional[sqlite3.Row]:
         with self.connect() as conn:
             return conn.execute(
@@ -741,11 +830,12 @@ class Database:
                 WHERE guild_id = ? AND analyst_id = ? AND action IN ('entry', 'roll_option')
                 AND COALESCE(status, 'open') = 'open'
                 AND (? IS NULL OR ticker = ?)
+                AND (? IS NULL OR asset_type = ?)
                 AND (? IS NULL OR contract = ?)
                 ORDER BY created_at DESC, id DESC
                 LIMIT 1
                 """,
-                (guild_id, analyst_id, ticker, ticker, contract, contract),
+                (guild_id, analyst_id, ticker, ticker, asset_type, asset_type, contract, contract),
             ).fetchone()
 
     def list_open_entry_alerts(self, guild_id: int, analyst_id: int) -> list[sqlite3.Row]:
@@ -907,8 +997,8 @@ class Database:
             cur = conn.execute(
                 """
                 INSERT INTO user_positions
-                (guild_id, user_id, analyst_id, entry_alert_id, current_alert_id, ticker, contract, expiration, entry_price, average_price, add_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                (guild_id, user_id, analyst_id, entry_alert_id, current_alert_id, ticker, asset_type, contract, expiration, entry_price, average_price, add_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                 """,
                 (
                     guild_id,
@@ -917,6 +1007,7 @@ class Database:
                     alert_id,
                     alert_id,
                     alert["ticker"] if alert else None,
+                    alert["asset_type"] if alert else "option",
                     alert["contract"] if alert else None,
                     alert["expiration"] if alert else None,
                     alert["price"] if alert else None,
@@ -948,6 +1039,7 @@ class Database:
         analyst_id: int,
         ticker: Optional[str],
         contract: Optional[str],
+        asset_type: Optional[str] = None,
     ) -> list[sqlite3.Row]:
         with self.connect() as conn:
             if ticker or contract:
@@ -956,10 +1048,11 @@ class Database:
                     SELECT * FROM user_positions
                     WHERE guild_id = ? AND user_id = ? AND analyst_id = ? AND status = 'open'
                     AND (? IS NULL OR ticker = ?)
+                    AND (? IS NULL OR asset_type = ?)
                     AND (? IS NULL OR contract = ?)
                     ORDER BY opened_at DESC
                     """,
-                    (guild_id, user_id, analyst_id, ticker, ticker, contract, contract),
+                    (guild_id, user_id, analyst_id, ticker, ticker, asset_type, asset_type, contract, contract),
                 ).fetchall()
 
             row = conn.execute(
@@ -1026,10 +1119,10 @@ class Database:
                 INSERT INTO position_events
                 (
                     guild_id, user_id, analyst_id, position_id, alert_id, event_type,
-                    ticker, old_contract, old_expiration, old_price,
+                    ticker, asset_type, old_contract, old_expiration, old_price,
                     new_contract, new_expiration, new_price, raw_text
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     position["guild_id"],
@@ -1039,6 +1132,7 @@ class Database:
                     alert_id,
                     event_type,
                     position["ticker"],
+                    position["asset_type"],
                     position["contract"],
                     position["expiration"],
                     old_average,
@@ -1081,10 +1175,10 @@ class Database:
                 INSERT INTO position_events
                 (
                     guild_id, user_id, analyst_id, position_id, alert_id, event_type,
-                    ticker, old_contract, old_expiration, old_price,
+                    ticker, asset_type, old_contract, old_expiration, old_price,
                     new_contract, new_expiration, new_price, roll_cost, roll_cost_type, raw_text
                 )
-                VALUES (?, ?, ?, ?, ?, 'roll_option', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, 'roll_option', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     position["guild_id"],
@@ -1093,6 +1187,7 @@ class Database:
                     position_id,
                     alert_id,
                     position["ticker"],
+                    position["asset_type"],
                     position["contract"],
                     position["expiration"],
                     position["average_price"] if position["average_price"] is not None else position["entry_price"],
@@ -1107,11 +1202,11 @@ class Database:
             conn.execute(
                 """
                 UPDATE user_positions
-                SET ticker = ?, contract = ?, expiration = ?, entry_price = ?,
+                SET ticker = ?, asset_type = ?, contract = ?, expiration = ?, entry_price = ?,
                     average_price = ?, add_count = 1, current_alert_id = ?
                 WHERE id = ? AND user_id = ?
                 """,
-                (next_ticker, next_contract, next_expiration, next_price, next_price, alert_id, position_id, user_id),
+                (next_ticker, "option", next_contract, next_expiration, next_price, next_price, alert_id, position_id, user_id),
             )
             return True
 

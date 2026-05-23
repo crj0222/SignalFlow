@@ -5,12 +5,8 @@ from collections import OrderedDict
 
 VALID_EXAMPLE_ACTIONS = (
     "entry",
-    "add",
-    "average_down",
-    "average_up",
     "trim",
     "close",
-    "roll_option",
     "ignore",
 )
 

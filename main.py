@@ -20,7 +20,7 @@ from embeds import (
 from models import Analyst, ParsedAlert
 from classifier import IMAGE_EXTENSIONS, classify_alert, classify_image_alert
 from parser import parse_gain_percent
-from views import AutoTakenEntryAlertView, EntryAlertView, ExitAlertView
+from views import AutoTakenEntryAlertView, EntryAlertView, ExitAlertView, ReviewAlertView
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -110,10 +110,10 @@ class SignalFlowBot(commands.Bot):
         )
 
         if confidence == "medium":
-            await self._send_review_alert(message.guild, analyst, parsed)
+            await self._send_review_alert(message.guild, analyst, parsed, message.channel.id, message.id)
             return
 
-        routed = await self.route_alert(message.guild, analyst, parsed, message.channel.id, message.id)
+        routed = await self.route_alert(message.guild, analyst, parsed, message.channel.id, message.id, context_resolved=True)
         log.info("Routed %s alert from %s to %s user(s)", parsed.action, analyst.name, routed)
 
     async def _classify_image_attachments(self, message: discord.Message, examples) -> Optional[ParsedAlert]:
@@ -138,10 +138,17 @@ class SignalFlowBot(commands.Bot):
         if parsed.action in {"trim", "close"}:
             return parsed.price is None or not (parsed.ticker or parsed.contract)
         if parsed.action in {"entry", "add", "average_down", "average_up"}:
-            return parsed.price is None or not (parsed.ticker and parsed.contract)
+            return parsed.price is None or not (parsed.ticker and (parsed.contract or parsed.asset_type in {"stock", "future"}))
         return False
 
-    async def _send_review_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert) -> None:
+    async def _send_review_alert(
+        self,
+        guild: discord.Guild,
+        analyst: Analyst,
+        parsed: ParsedAlert,
+        source_channel_id: Optional[int] = None,
+        source_message_id: Optional[int] = None,
+    ) -> None:
         channel_id = self.db.get_review_channel_id(guild.id)
         if not channel_id:
             log.info("Skipped medium-confidence %s alert; no review channel configured", parsed.action)
@@ -153,7 +160,10 @@ class SignalFlowBot(commands.Bot):
             return
 
         try:
-            await channel.send(embed=review_alert_embed(analyst, parsed, guild_name=guild.name))
+            await channel.send(
+                embed=review_alert_embed(analyst, parsed, guild_name=guild.name),
+                view=ReviewAlertView(self.db, guild.id, analyst, parsed, source_channel_id, source_message_id),
+            )
         except discord.HTTPException:
             log.exception("Failed to send review alert to channel %s", channel_id)
 
@@ -164,8 +174,10 @@ class SignalFlowBot(commands.Bot):
         parsed: ParsedAlert,
         channel_id: Optional[int],
         message_id: Optional[int],
+        context_resolved: bool = False,
     ) -> int:
-        parsed = self._resolve_contextual_alert(guild.id, analyst.id, parsed)
+        if not context_resolved:
+            parsed = self._resolve_contextual_alert(guild.id, analyst.id, parsed)
         alert_id = self.db.log_alert(guild.id, analyst.id, channel_id, message_id, parsed)
         if parsed.is_entry:
             return await self._route_entry_alert(guild, analyst, parsed, alert_id)
@@ -179,6 +191,18 @@ class SignalFlowBot(commands.Bot):
 
     def _logo_url(self) -> Optional[str]:
         return self.user.display_avatar.url if self.user else None
+
+    async def _resolve_discord_user(self, user_id: int) -> Optional[discord.User]:
+        user = self.get_user(user_id)
+        if user:
+            return user
+        try:
+            return await self.fetch_user(user_id)
+        except discord.NotFound:
+            log.warning("Discord user %s no longer exists or is unavailable", user_id)
+        except discord.HTTPException:
+            log.exception("Failed to fetch Discord user %s", user_id)
+        return None
 
     def _apply_analyst_rule_hooks(self, analyst: Analyst, parsed: ParsedAlert) -> ParsedAlert:
         # Hook point for analyst-specific overrides without changing the shared parser.
@@ -198,9 +222,9 @@ class SignalFlowBot(commands.Bot):
 
     def _resolve_contextual_alert(self, guild_id: int, analyst_id: int, parsed: ParsedAlert) -> ParsedAlert:
         if parsed.action in {"add", "average_down", "average_up"}:
-            entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, parsed.contract)
+            entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, parsed.contract, parsed.asset_type if parsed.asset_type != "unknown" else None)
             if not entry and parsed.ticker:
-                entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, None)
+                entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, None, parsed.asset_type if parsed.asset_type != "unknown" else None)
             if not entry:
                 return replace(parsed, confidence="medium")
 
@@ -218,13 +242,14 @@ class SignalFlowBot(commands.Bot):
                 ticker=parsed.ticker or entry["ticker"],
                 contract=parsed.contract or entry["contract"],
                 expiration=entry["expiration"] or parsed.expiration,
+                asset_type=entry["asset_type"] or parsed.asset_type,
                 confidence=self._confidence_level(parsed.confidence) if keep_medium else ("high" if parsed.price is not None else self._confidence_level(parsed.confidence)),
             )
 
         if parsed.action == "roll_option":
-            entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, parsed.old_contract or None)
+            entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, parsed.old_contract or None, "option")
             if not entry and parsed.ticker:
-                entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, None)
+                entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, None, "option")
             if not entry:
                 entry = self.db.latest_open_entry_alert(guild_id, analyst_id)
             if not entry:
@@ -236,6 +261,7 @@ class SignalFlowBot(commands.Bot):
                 old_contract=parsed.old_contract or entry["contract"],
                 old_expiration=parsed.old_expiration or entry["expiration"],
                 old_price=parsed.old_price if parsed.old_price is not None else entry["price"],
+                asset_type="option",
                 confidence="high" if parsed.contract else self._confidence_level(parsed.confidence),
             )
 
@@ -245,9 +271,9 @@ class SignalFlowBot(commands.Bot):
             if missing_trade_details:
                 entry = self.db.latest_open_entry_alert(guild_id, analyst_id)
             elif parsed.ticker or parsed.contract:
-                entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, parsed.contract)
+                entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, parsed.contract, parsed.asset_type if parsed.asset_type != "unknown" else None)
                 if not entry and parsed.ticker:
-                    entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, None)
+                    entry = self.db.latest_open_entry_alert(guild_id, analyst_id, parsed.ticker, None, parsed.asset_type if parsed.asset_type != "unknown" else None)
 
             if entry and parsed.action == "trim":
                 return replace(
@@ -255,6 +281,7 @@ class SignalFlowBot(commands.Bot):
                     ticker=parsed.ticker or entry["ticker"],
                     contract=parsed.contract or entry["contract"],
                     expiration=entry["expiration"] or parsed.expiration,
+                    asset_type=entry["asset_type"] or parsed.asset_type,
                     confidence="medium" if self._should_keep_review_confidence(parsed) else "high",
                 )
             if missing_trade_details and entry:
@@ -263,6 +290,7 @@ class SignalFlowBot(commands.Bot):
                     ticker=entry["ticker"],
                     contract=entry["contract"],
                     expiration=entry["expiration"],
+                    asset_type=entry["asset_type"] or parsed.asset_type,
                     confidence="medium" if self._should_keep_review_confidence(parsed) else "high",
                 )
             if parsed.action == "close" and not entry:
@@ -272,9 +300,10 @@ class SignalFlowBot(commands.Bot):
 
     async def _route_entry_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
         routed = 0
-        embed = entry_alert_embed(analyst, parsed, guild_name=guild.name, logo_url=self._logo_url())
+        logo_url = self._logo_url()
+        embed = entry_alert_embed(analyst, parsed, guild_name=guild.name, logo_url=logo_url)
         for user_id in self.db.subscribed_users(guild.id, analyst.id):
-            user = self.get_user(user_id) or await self.fetch_user(user_id)
+            user = await self._resolve_discord_user(user_id)
             if not user:
                 continue
             try:
@@ -294,19 +323,20 @@ class SignalFlowBot(commands.Bot):
         return routed
 
     async def _route_position_update_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
-        analyst_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, parsed.contract)
+        analyst_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, parsed.contract, parsed.asset_type if parsed.asset_type != "unknown" else None)
         if not analyst_entry and parsed.ticker:
-            analyst_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, None)
+            analyst_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, None, parsed.asset_type if parsed.asset_type != "unknown" else None)
         if not analyst_entry:
             return 0
 
         routed = 0
+        logo_url = self._logo_url()
         for user_id in self.db.subscribed_users(guild.id, analyst.id):
             positions = self.db.find_open_positions_for_entry_alert(guild.id, user_id, analyst_entry["id"])
             if not positions:
                 continue
 
-            user = self.get_user(user_id) or await self.fetch_user(user_id)
+            user = await self._resolve_discord_user(user_id)
             if not user:
                 continue
 
@@ -319,7 +349,7 @@ class SignalFlowBot(commands.Bot):
                         parsed,
                         reference_price=reference_price,
                         guild_name=guild.name,
-                        logo_url=self._logo_url(),
+                        logo_url=logo_url,
                     ),
                     view=ExitAlertView(self.db, guild.id, position["id"], alert_id),
                 )
@@ -332,9 +362,9 @@ class SignalFlowBot(commands.Bot):
         return routed
 
     async def _route_roll_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
-        old_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, parsed.old_contract or None)
+        old_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, parsed.old_contract or None, "option")
         if not old_entry and parsed.ticker:
-            old_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, None)
+            old_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, parsed.ticker, None, "option")
         if not old_entry:
             old_entry = self.db.latest_open_entry_alert(guild.id, analyst.id)
         if not old_entry:
@@ -349,12 +379,13 @@ class SignalFlowBot(commands.Bot):
         self.db.mark_entry_alert_rolled(old_entry["id"], alert_id)
 
         routed = 0
+        logo_url = self._logo_url()
         for user_id in self.db.subscribed_users(guild.id, analyst.id):
             positions = self.db.find_open_positions_for_entry_alert(guild.id, user_id, old_entry["id"])
             if not positions:
                 continue
 
-            user = self.get_user(user_id) or await self.fetch_user(user_id)
+            user = await self._resolve_discord_user(user_id)
             if not user:
                 continue
 
@@ -370,7 +401,7 @@ class SignalFlowBot(commands.Bot):
                         old_expiration=parsed.old_expiration or old_entry["expiration"],
                         old_price=old_price,
                         guild_name=guild.name,
-                        logo_url=self._logo_url(),
+                        logo_url=logo_url,
                     ),
                     view=ExitAlertView(self.db, guild.id, position["id"], alert_id),
                 )
@@ -394,15 +425,34 @@ class SignalFlowBot(commands.Bot):
         await self._edit_entry_deliveries_closed(guild, analyst, old_entry, "roll_option")
         return routed
 
-    def _trim_gain_pct(self, entry_price: Optional[float], trim_price: Optional[float]) -> Optional[float]:
+    def _trim_gain_pct(self, entry_price: Optional[float], trim_price: Optional[float], is_short: bool = False) -> Optional[float]:
         if entry_price is None or trim_price is None or entry_price <= 0:
             return None
-        return ((trim_price - entry_price) / entry_price) * 100
+        change = entry_price - trim_price if is_short else trim_price - entry_price
+        return (change / entry_price) * 100
+
+    def _is_short_entry_row(self, entry) -> bool:
+        if not entry or entry["asset_type"] not in {"stock", "future"}:
+            return False
+        return bool(re.search(r"\b(SHORT|SOLD SHORT|SELLING SHORT)\b", entry["raw_text"] or "", re.IGNORECASE))
 
     def _price_from_gain_pct(self, entry_price: Optional[float], gain_pct: Optional[float]) -> Optional[float]:
         if entry_price is None or gain_pct is None or entry_price <= 0:
             return None
         return round(entry_price * (1 + (gain_pct / 100)), 2)
+
+    def _is_breakeven_alert(self, parsed: ParsedAlert) -> bool:
+        return bool(
+            parsed.action in {"close", "exit"}
+            and re.search(r"\b(?:B/E|AT B/E|AT BE|AT EVEN|BREAKEVEN|BREAK EVEN|SCRATCH)\b", parsed.raw_text or "", re.IGNORECASE)
+        )
+
+    def _close_action_for_display(self, parsed: ParsedAlert) -> str:
+        if self._is_breakeven_alert(parsed):
+            return "breakeven"
+        if re.search(r"\b(?:STOPPED OUT|STOP HIT|STOP LOSS HIT|SL HIT|CUT(?:TING)?(?: HERE)?)\b", parsed.raw_text or "", re.IGNORECASE):
+            return "stop"
+        return parsed.action
 
     def _entry_to_display_alert(self, parsed: ParsedAlert, entry) -> ParsedAlert:
         trade_note = parsed.trade_note if parsed.action == "trim" else (parsed.trade_note or entry["trade_note"])
@@ -413,6 +463,7 @@ class SignalFlowBot(commands.Bot):
             expiration=entry["expiration"],
             price=parsed.price if parsed.price is not None else entry["price"],
             trade_note=trade_note,
+            asset_type=entry["asset_type"] or parsed.asset_type,
             confidence="normal",
         )
 
@@ -426,6 +477,7 @@ class SignalFlowBot(commands.Bot):
             price=entry["price"],
             raw_text=entry["raw_text"] or "",
             trade_note=entry["trade_note"],
+            asset_type=entry["asset_type"],
         )
 
     async def _edit_entry_deliveries_closed(
@@ -450,7 +502,10 @@ class SignalFlowBot(commands.Bot):
 
         for delivery in deliveries:
             try:
-                user = self.get_user(delivery["user_id"]) or await self.fetch_user(delivery["user_id"])
+                user = await self._resolve_discord_user(delivery["user_id"])
+                if not user:
+                    self.db.mark_alert_delivery_status(delivery["id"], "missing")
+                    continue
                 channel = user.dm_channel or await user.create_dm()
                 message = await channel.fetch_message(delivery["dm_message_id"])
                 await message.edit(embed=embed, view=None)
@@ -472,21 +527,22 @@ class SignalFlowBot(commands.Bot):
         if missing_trade_details or closes_analyst_trade:
             lookup_ticker = parsed.ticker if not missing_trade_details else None
             lookup_contract = parsed.contract if not missing_trade_details else None
-            analyst_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, lookup_ticker, lookup_contract)
+            analyst_entry = self.db.latest_open_entry_alert(guild.id, analyst.id, lookup_ticker, lookup_contract, parsed.asset_type if parsed.asset_type != "unknown" and not missing_trade_details else None)
             if closes_analyst_trade and not analyst_entry:
                 return 0
         if closes_analyst_trade and analyst_entry:
             self.db.close_entry_alert(analyst_entry["id"])
 
+        logo_url = self._logo_url()
         for user_id in self.db.subscribed_users(guild.id, analyst.id):
             if analyst_entry:
                 positions = self.db.find_open_positions_for_entry_alert(guild.id, user_id, analyst_entry["id"])
             else:
-                positions = self.db.find_open_positions(guild.id, user_id, analyst.id, parsed.ticker, parsed.contract)
+                positions = self.db.find_open_positions(guild.id, user_id, analyst.id, parsed.ticker, parsed.contract, parsed.asset_type if parsed.asset_type != "unknown" else None)
             if not positions:
                 continue
 
-            user = self.get_user(user_id) or await self.fetch_user(user_id)
+            user = await self._resolve_discord_user(user_id)
             if not user:
                 continue
 
@@ -500,12 +556,17 @@ class SignalFlowBot(commands.Bot):
                     ticker=parsed.ticker or position["ticker"],
                     contract=parsed.contract or position["contract"],
                     expiration=position["expiration"] if missing_trade_details else (parsed.expiration or position["expiration"]),
+                    asset_type=position["asset_type"] or parsed.asset_type,
                     confidence="normal",
                 )
             exit_actions = {"trim", "close", "stop", "exit"}
             gain_price = parsed.price if parsed.action in exit_actions else None
             basis_price = position["average_price"] if position["average_price"] is not None else position["entry_price"]
-            gain_pct = self._trim_gain_pct(basis_price, gain_price) if parsed.action in exit_actions else None
+            gain_pct = (
+                0.0
+                if self._is_breakeven_alert(parsed)
+                else self._trim_gain_pct(basis_price, gain_price, self._is_short_entry_row(analyst_entry)) if parsed.action in exit_actions else None
+            )
             if gain_pct is None and parsed.action in exit_actions:
                 gain_pct = parse_gain_percent(parsed.raw_text)
             if parsed.price is None and gain_pct is not None:
@@ -520,7 +581,7 @@ class SignalFlowBot(commands.Bot):
                         possible=False,
                         gain_pct=gain_pct,
                         guild_name=guild.name,
-                        logo_url=self._logo_url(),
+                        logo_url=logo_url,
                     ),
                     view=view,
                 )
@@ -532,7 +593,7 @@ class SignalFlowBot(commands.Bot):
             except discord.HTTPException:
                 log.exception("Failed to DM trim/exit alert to user %s", user_id)
         if closes_analyst_trade and analyst_entry:
-            await self._edit_entry_deliveries_closed(guild, analyst, analyst_entry, parsed.action)
+            await self._edit_entry_deliveries_closed(guild, analyst, analyst_entry, self._close_action_for_display(parsed))
         return routed
 
 

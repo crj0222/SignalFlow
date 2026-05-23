@@ -1,33 +1,34 @@
 import re
+from dataclasses import replace
 
 import discord
 
 from database import Database
-from embeds import success_embed, warning_embed
-from models import Analyst
+from embeds import BRAND_COLOR, FOOTER, success_embed, warning_embed
+from models import Analyst, ParsedAlert
 
 
 ANALYST_EMOJIS = [
-    "🔵",
-    "🟢",
-    "🟣",
-    "🟡",
-    "🔴",
-    "⚪",
-    "⚫",
-    "⭐",
-    "🔥",
-    "💎",
-    "📈",
-    "🎯",
-    "🚀",
-    "⚡",
-    "🏆",
-    "🔔",
-    "✅",
-    "🧭",
-    "💬",
-    "📌",
+    "\U0001f535",
+    "\U0001f7e2",
+    "\U0001f7e3",
+    "\U0001f7e1",
+    "\U0001f534",
+    "\u26aa",
+    "\u26ab",
+    "\u2b50",
+    "\U0001f525",
+    "\U0001f48e",
+    "\U0001f4c8",
+    "\U0001f3af",
+    "\U0001f680",
+    "\u26a1",
+    "\U0001f3c6",
+    "\U0001f514",
+    "\u2705",
+    "\U0001f9ed",
+    "\U0001f4ac",
+    "\U0001f4cc",
 ]
 
 
@@ -35,10 +36,10 @@ MENTION_RE = re.compile(r"^<@!?(\d+)>$")
 
 
 def clean_analyst_name(name: str) -> str:
-    value = name.strip()
+    value = " ".join((name or "").split()).strip()
     mention = MENTION_RE.match(value)
     if mention:
-        return mention.group(1)
+        return f"Analyst {mention.group(1)[-4:]}"
     return value[1:] if value.startswith("@") else value
 
 
@@ -88,9 +89,9 @@ def build_analyst_picker_embed(analysts: list[Analyst], selected_ids: set[int]) 
     embed = discord.Embed(
         title="Select Analysts",
         description=description,
-        color=0x2F80ED,
+        color=BRAND_COLOR,
     )
-    embed.set_footer(text="Tap a button to turn that analyst on or off.")
+    embed.set_footer(text=f"{FOOTER} \u2022 Tap a button to toggle alerts")
     return embed
 
 
@@ -174,6 +175,111 @@ class ExitAlertView(discord.ui.View):
             )
         else:
             await interaction.response.send_message(embed=warning_embed("I could not find an open position to close."), ephemeral=True)
+
+
+class ReviewAlertView(discord.ui.View):
+    def __init__(
+        self,
+        db: Database,
+        guild_id: int,
+        analyst: Analyst,
+        parsed: ParsedAlert,
+        source_channel_id: int | None = None,
+        source_message_id: int | None = None,
+    ) -> None:
+        super().__init__(timeout=3600)
+        self.db = db
+        self.guild_id = guild_id
+        self.analyst = analyst
+        self.parsed = parsed
+        self.source_channel_id = source_channel_id
+        self.source_message_id = source_message_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        perms = interaction.user.guild_permissions if isinstance(interaction.user, discord.Member) else None
+        if not (perms and perms.manage_guild):
+            await interaction.response.send_message(
+                embed=warning_embed("You need Manage Server permission to review alerts."),
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    def _example_text(self) -> str:
+        text = " ".join((self.parsed.raw_text or "").split()).strip()
+        return text[:900]
+
+    def _save_example(self, action: str) -> int | None:
+        if action not in {"entry", "trim", "close", "ignore"}:
+            return None
+        text = self._example_text()
+        if not text:
+            return None
+        return self.db.add_classifier_example(self.guild_id, action, text)
+
+    async def _disable_review(self, interaction: discord.Interaction, status: str) -> None:
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        if interaction.message:
+            try:
+                embed = interaction.message.embeds[0] if interaction.message.embeds else None
+                if embed:
+                    embed.add_field(name="Review Result", value=status, inline=False)
+                    await interaction.message.edit(embed=embed, view=self)
+                else:
+                    await interaction.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+    async def _approve(self, interaction: discord.Interaction, action: str, save_example: bool = True) -> None:
+        if not interaction.guild:
+            await interaction.response.send_message(embed=warning_embed("Use this inside the server."), ephemeral=True)
+            return
+
+        reviewed = replace(self.parsed, action=action, confidence="high")
+        example_id = self._save_example(action) if save_example else None
+        await interaction.response.defer(ephemeral=True)
+        routed = await interaction.client.route_alert(  # type: ignore[attr-defined]
+            interaction.guild,
+            self.analyst,
+            reviewed,
+            self.source_channel_id,
+            self.source_message_id,
+        )
+        saved_text = f"\nSaved example `#{example_id}` as `{action}`." if example_id else ""
+        await self._disable_review(interaction, f"Approved as `{action}` by {interaction.user.mention}. Routed to `{routed}` user(s).")
+        await interaction.followup.send(
+            embed=success_embed(f"Approved as `{action}` and routed to `{routed}` user DM(s).{saved_text}"),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="Send Detected", style=discord.ButtonStyle.primary, custom_id="signalflow:review_send_detected", row=0)
+    async def send_detected(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._approve(interaction, self.parsed.action, save_example=self.parsed.action in {"entry", "trim", "close"})
+
+    @discord.ui.button(label="Entry", style=discord.ButtonStyle.success, custom_id="signalflow:review_entry", row=1)
+    async def entry(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._approve(interaction, "entry")
+
+    @discord.ui.button(label="Trim", style=discord.ButtonStyle.success, custom_id="signalflow:review_trim", row=1)
+    async def trim(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._approve(interaction, "trim")
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.success, custom_id="signalflow:review_close", row=1)
+    async def close(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._approve(interaction, "close")
+
+    @discord.ui.button(label="Ignore", style=discord.ButtonStyle.danger, custom_id="signalflow:review_ignore", row=1)
+    async def ignore(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        example_id = self._save_example("ignore")
+        saved_text = f" Saved example `#{example_id}` as `ignore`." if example_id else ""
+        await interaction.response.defer(ephemeral=True)
+        await self._disable_review(interaction, f"Ignored by {interaction.user.mention}.{saved_text}")
+        await interaction.followup.send(
+            embed=success_embed(f"Ignored.{saved_text}"),
+            ephemeral=True,
+        )
 
 
 class StopAlertView(discord.ui.View):

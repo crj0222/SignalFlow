@@ -136,10 +136,12 @@ class UserCommands(commands.Cog):
             positions = self.db.list_open_entry_alerts(interaction.guild_id, analyst_row.id)
         lines = []
         for pos in positions:
-            trade = " ".join(part for part in [pos["ticker"], pos["expiration"], pos["contract"]] if part)
+            asset_type = pos["asset_type"] if "asset_type" in pos.keys() else "option"
+            trade = " ".join(part for part in [pos["ticker"], pos["expiration"] if asset_type == "option" else None, pos["contract"]] if part)
             price = f" @{pos['price']:g}" if pos["price"] is not None else ""
             note = f" - {pos['trade_note']}" if pos["trade_note"] else ""
-            lines.append(f"- **{trade or 'Details not detected'}{price}**{note}")
+            label = {"stock": "Stock", "future": "Futures", "option": "Option"}.get(asset_type, "Trade")
+            lines.append(f"- **{trade or 'Details not detected'}{price}** `{label}`{note}")
 
         await interaction.response.send_message(
             embed=list_embed(

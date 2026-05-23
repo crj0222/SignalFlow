@@ -26,6 +26,7 @@ class ParsedAlert:
     old_price: Optional[float] = None
     roll_cost: Optional[float] = None
     roll_cost_type: Optional[str] = None
+    asset_type: str = "option"
 
     @property
     def is_entry(self) -> bool:

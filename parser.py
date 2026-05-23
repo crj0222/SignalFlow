@@ -54,6 +54,7 @@ ADD_WORDS = (
     "AVERAGE UP",
     "AVERAGING UP",
     "BACK IN",
+    "DOUBLE DOWN",
     "RELOAD",
     "RELOADED",
     "RELOADING",
@@ -92,7 +93,9 @@ EXIT_WORDS = (
     "FLAT ON",
     "DONE WITH THIS TRADE",
     "LOCK PROFITS",
+    "LOCK SOME PROFITS",
     "LOCKING PROFITS",
+    "LOCKING SOME PROFITS",
     "OUT HERE",
     "PROFIT TAKING",
     "REDUCE RISK",
@@ -111,10 +114,14 @@ EXIT_WORDS = (
     "SOLD",
     "STC",
     "TAKE HALF",
+    "TAKE SOME OFF",
     "TAKE A TRIM",
     "TAKE PROFIT",
     "TAKE PROFITS",
     "TAKE SOME PROFITS",
+    "TOOK SOME PROFIT",
+    "TOOK SOME PROFITS",
+    "TOOK SOME OFF",
     "TAKING PROFIT",
     "TAKING PROFITS",
     "TAKING HALF",
@@ -169,6 +176,7 @@ FORWARD_ENTRY_WORDS = (
 )
 
 TICKER_RE = re.compile(r"\$?\b([A-Z]{1,5})\b")
+FUTURES_RE = re.compile(r"(?<![A-Z0-9])/?(MES|MNQ|M2K|MYM|ES|NQ|RTY|YM|CL|GC|SI|HG|NG|ZB|ZN|ZF|ZT)\b", re.IGNORECASE)
 CONTRACT_RE = re.compile(r"(?<![\d/])\$?(\d{1,5}(?:\.\d{1,2})?\s*(?:[CP]|CALLS?|PUTS?))\b", re.IGNORECASE)
 EXPIRATION_RE = re.compile(r"\b(\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b")
 MONTH_EXPIRATION_RE = re.compile(
@@ -280,6 +288,7 @@ COMMON_NON_TICKERS = {
     "FREE",
     "FROM",
     "FULL",
+    "FYI",
     "GRABBED",
     "HALF",
     "HERE",
@@ -289,6 +298,7 @@ COMMON_NON_TICKERS = {
     "I",
     "IDEA",
     "IF",
+    "IMO",
     "IM",
     "IN",
     "IS",
@@ -301,11 +311,13 @@ COMMON_NON_TICKERS = {
     "LOSS",
     "LOT",
     "LOTTO",
+    "MAY",
     "MAYBE",
     "ME",
     "MORE",
     "MY",
     "NEXT",
+    "NICE",
     "NOT",
     "NOW",
     "NOTES",
@@ -318,9 +330,11 @@ COMMON_NON_TICKERS = {
     "OPEN",
     "OPENING",
     "OPTION",
+    "ONLY",
     "OR",
     "OUR",
     "OUT",
+    "PAID",
     "PING",
     "PLAN",
     "PLANNED",
@@ -391,7 +405,9 @@ def _contains_any(text: str, words: tuple[str, ...]) -> bool:
 
 
 def _normalize_ticker_candidate(value: str) -> str:
-    value = value.upper()
+    value = value.upper().lstrip("/")
+    if value in {"MES", "MNQ", "M2K", "MYM", "ES", "NQ", "RTY", "YM", "CL", "GC", "SI", "HG", "NG", "ZB", "ZN", "ZF", "ZT"}:
+        return f"/{value}"
     if re.fullmatch(r"SPX{2,}", value):
         return "SPX"
     if re.fullmatch(r"SPY{2,}", value):
@@ -415,6 +431,10 @@ def _strip_alert_noise(text: str) -> str:
 def _parse_ticker(text: str) -> Optional[str]:
     text = _strip_alert_noise(text)
     text = re.sub(r"\bB\s*/\s*E\b|\bB\.E\.\b", " ", text, flags=re.IGNORECASE)
+
+    futures_match = FUTURES_RE.search(text)
+    if futures_match and re.search(r"\b(LONG|SHORT|BUY(?:ING)?|BOUGHT|SELL(?:ING)?|SOLD|ENTER(?:ING|ED)?|OPEN(?:ING)?|ADD(?:ED|ING)?|TRIM(?:MED|MING)?|CLOSE(?:D|ING)?|EXIT(?:ED|ING)?|STOP(?:PED)?|CUT)\b", text, flags=re.IGNORECASE):
+        return _normalize_ticker_candidate(futures_match.group(1))
 
     option_line = re.search(r"\bOPTION\s*:\s*\$?([A-Z]{1,5})\b", text, flags=re.IGNORECASE)
     if option_line:
@@ -495,6 +515,10 @@ def parse_trade_note(text: str) -> str:
     notes = []
     if re.search(r"\b(SWING|SWINGER|OVERNIGHT|MULTI[- ]?DAY)\b", upper):
         notes.append("Swing")
+    if re.search(r"\bSHORT\b", upper):
+        notes.append("Short")
+    elif re.search(r"\bLONG\b", upper):
+        notes.append("Long")
     if re.search(r"\b(0DTE|0 DTE|ZERO DTE)\b", upper):
         notes.append("0DTE")
     if re.search(r"\b(DAY TRADE|DAYTRADE|SCALP|SCALPING|INTRADAY)\b", upper):
@@ -519,17 +543,31 @@ def parse_position_note(text: str) -> str:
         return "1/3 Position"
     if re.search(r"\b(?:DOWN TO|REDUCED TO|CUT TO)\s+1/4\b|\b1/4\s+(?:POSITION|POS|LEFT|REMAINING)\b", upper):
         return "1/4 Position"
-    if re.search(r"\b(?:RUNNER|RUNNERS|RUNNER LEFT|RUNNERS LEFT|LETTING RUNNERS|TRAILING RUNNERS)\b", upper):
+    if re.search(r"\b(?:RUNNER|RUNNERS|RUNNER LEFT|RUNNERS LEFT|LEAVING RUNNERS|LETTING RUNNERS|TRAILING RUNNERS|REST RIDE|REST RIDING)\b", upper):
         return "Runners"
-    if re.search(r"\b(?:RISK FREE|RISK-FREE|REDUCED RISK|STOP TO EVEN|STOP LOSS TO EVEN|BREAKEVEN|BREAK EVEN|AT EVEN|AT B/E|AT BE|B/E)\b", upper):
+    if re.search(r"\b(?:RISK FREE|RISK-FREE|REDUCE RISK|REDUCED RISK|STOP TO EVEN|STOP LOSS TO EVEN|BREAKEVEN|BREAK EVEN|AT EVEN|AT B/E|AT BE|B/E)\b", upper):
         return "Risk Free"
-    if re.search(r"\b(?:MOST|MAJORITY)\s+(?:OFF|OUT|SOLD|TRIMMED)\b", upper):
+    if re.search(r"\b(?:MOST|MAJORITY)\s+(?:OFF|OUT|SOLD|TRIMMED)\b|\b(?:SOLD|SELLING|TRIM(?:MED|MING)?)\s+(?:MOST|MAJORITY)\b", upper):
         return "Majority Trimmed"
     return ""
 
 
-def apply_default_expiration_and_note(action: str, expiration: Optional[str], trade_note: Optional[str]) -> tuple[str, str]:
+def infer_asset_type(ticker: Optional[str], contract: Optional[str], text: str = "") -> str:
+    if contract:
+        return "option"
+    if ticker and ticker.startswith("/"):
+        return "future"
+    if re.search(r"\b(FUTURES?|CONTRACTS?)\b", text, flags=re.IGNORECASE) and ticker and FUTURES_RE.search(ticker):
+        return "future"
+    if re.search(r"\b(SHARES?|STOCKS?|COMMONS?|EQUITY)\b", text, flags=re.IGNORECASE):
+        return "stock"
+    return "unknown"
+
+
+def apply_default_expiration_and_note(action: str, expiration: Optional[str], trade_note: Optional[str], asset_type: str = "option") -> tuple[Optional[str], str]:
     note = trade_note or ""
+    if asset_type != "option":
+        return expiration, note
     if expiration:
         return expiration, note
     note_parts = {part.strip() for part in note.split(" / ") if part.strip()}
@@ -568,6 +606,29 @@ def parse_price(text: str, contract: Optional[str] = None) -> Optional[float]:
     return None
 
 
+def parse_market_price(text: str, ticker: Optional[str] = None) -> Optional[float]:
+    if ticker:
+        clean_ticker = re.escape(ticker.lstrip("/"))
+        ticker_match = re.search(rf"/?{clean_ticker}\b", text, flags=re.IGNORECASE)
+        if not ticker_match:
+            return None
+        nearby = text[ticker_match.end() : ticker_match.end() + 36]
+        numbers = re.findall(r"(?<![\d/])\$?(\d{1,6}(?:\.\d{1,2})?)(?![\d/])", nearby)
+        if numbers:
+            return float(numbers[0])
+
+    patterns = (
+        r"(?:@|\bat\b|\bentry\b|\bavg\b|\baverage\b|\bfilled?\b|\bfrom\b)\s*[:,-]?\s*\$?(\d{1,6}(?:\.\d{1,2})?)",
+        r"\b(?:LONG|SHORT|BUY(?:ING)?|BOUGHT|ENTER(?:ING|ED)?|OPEN(?:ING)?|ADD(?:ED|ING)?)\b\s+/?[A-Z]{1,5}\s+\$?(\d{1,6}(?:\.\d{1,2})?)\b",
+        r"\$?(\d{1,6}(?:\.\d{1,2})?)\s+(?:ENTRY|AVG|AVERAGE|FILL(?:ED)?)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+    return None
+
+
 def parse_exit_price(text: str) -> Optional[float]:
     trim_price_matches = [*TRIM_PRICE_RE.finditer(text), *TRIM_SIZE_PRICE_RE.finditer(text)]
     if trim_price_matches:
@@ -577,7 +638,7 @@ def parse_exit_price(text: str) -> Optional[float]:
     range_match = EXIT_RANGE_RE.search(text)
     if range_match:
         return float(range_match.group(2))
-    return parse_price(text)
+    return parse_price(text) or parse_market_price(text)
 
 
 def parse_gain_percent(text: str) -> Optional[float]:
@@ -653,11 +714,19 @@ def parse_roll_details(text: str) -> dict[str, Optional[object]]:
 
 def _has_strong_entry(text: str, has_clean_trade_details: bool) -> bool:
     if re.search(
-        r"(?:^|[\n|])\s*(?:OPEN|BTO|STO|BUY(?:ING)?|BOUGHT|ENTER(?:ING|ED)?|I'?M ENTERING|TAKING(?!\s+PROFITS?\b)|TOOK(?!\s+PROFITS?\b)|GRABB(?:ED|ING)?|FILL(?:ED)?)\b",
+        r"(?:^|[\n|])\s*(?:[^\w$]{0,4}\s*)?(?:OPEN|BTO|STO|BUY(?:ING)?|BOUGHT|ENTER(?:ING|ED)?|I'?M ENTERING|TAKING(?!\s+PROFITS?\b)|TOOK(?!\s+PROFITS?\b)|GRABB(?:ED|ING)?|FILL(?:ED)?|LONG|SHORT)\b",
         text,
     ):
         return True
     return bool(has_clean_trade_details and re.search(r"\b(HERE|AVG|AVERAGE)\b", text))
+
+
+def _has_stock_context(text: str) -> bool:
+    return bool(re.search(r"\b(SHARES?|STOCKS?|COMMONS?|EQUITY)\b", text))
+
+
+def _has_futures_context(text: str) -> bool:
+    return bool(FUTURES_RE.search(text) and re.search(r"\b(LONG|SHORT|FUTURES?|CONTRACTS?|POINTS?)\b", text))
 
 
 def _has_forward_add_context(text: str) -> bool:
@@ -670,10 +739,25 @@ def _has_forward_add_context(text: str) -> bool:
     )
 
 
+def _has_forward_entry_context(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:MAY|MIGHT|WILL|WOULD|CAN|COULD|LOOKING TO|WAIT(?:ING)? TO)\s+(?:BUY|ENTER|TAKE|OPEN|LONG|SHORT|GRAB)\b",
+            text,
+        )
+        or re.search(r"\bMAY\s+GO\s+(?:LONG|SHORT)\b", text)
+        or re.search(r"\b(?:IF|WHEN)\s+(?:IT\s+)?(?:BREAKS?|HOLDS?|RECLAIMS?|GETS|GOES|PUSHES|TAKES)\b", text)
+        or re.search(r"\b(?:OVER|UNDER|ABOVE|BELOW)\s+\$?\d{1,6}(?:\.\d{1,2})?\b", text)
+        or _contains_any(text, FORWARD_ENTRY_WORDS)
+    )
+
+
 def _has_strong_add(text: str, price: Optional[float], contract_match: Optional[re.Match[str]]) -> bool:
     if _has_forward_add_context(text):
         return False
-    if re.search(r"\bAVERAG(?:E|ED|ING)(?:\s+(?:DOWN|UP))?\b", text):
+    if re.search(r"\bDOUBLE\s+DOWN\b", text):
+        return True
+    if re.search(r"\b(?:AVG|AVERAG(?:E|ED|ING))(?:\s+(?:DOWN|UP))?\b", text):
         return True
     if re.search(r"\b(?:ADD(?:ED|ING)?|RELOAD(?:ED|ING)?|BACK IN)\b", text):
         return bool(price is not None or contract_match or re.search(r"\bHERE\b", text))
@@ -685,7 +769,11 @@ def _looks_like_runner_trim(text: str) -> bool:
         REDUCTION_TRIM_RE.search(text)
         or TRIM_PRICE_RE.search(text)
         or TRIM_SIZE_PRICE_RE.search(text)
-        or re.search(r"\b(?:LETTING|HOLDING)\s+RUNNERS?\b", text)
+        or re.search(r"\b(?:LEAVING|LETTING|HOLDING)\s+RUNNERS?\b", text)
+        or re.search(r"\b(?:LETTING|LET)\s+(?:THE\s+)?REST\s+RIDE\b", text)
+        or re.search(r"\b[A-Z]{1,5}\s+RUNNERS?\s+FROM\s+HERE\b", text)
+        or re.search(r"\bTAKE\s+\d{1,3}%\s+OFF\b", text)
+        or re.search(r"\b(?:RUNNERS?\s+ONLY|ONLY\s+RUNNERS?)\b", text)
         or re.search(r"\b\d{1,5}(?:\.\d{1,2})?\s*(?:[CP]|CALLS?|PUTS?)\b.*\bRUNNERS?\b", text)
         or (EXIT_RANGE_RE.search(text) and re.search(r"\b(HOLDING|RUNNER|RUNNERS|MOST|MAJORITY|REDUCED RISK)\b", text))
     )
@@ -707,14 +795,28 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
     contract = normalize_contract(contract_match.group(1)) if contract_match else None
     expiration = parse_expiration(cleaned)
     ticker = _parse_ticker(upper)
+    asset_type = infer_asset_type(ticker, contract, cleaned)
     price = parse_price(cleaned, contract)
-    has_clean_trade_details = bool(ticker and contract and price is not None)
+    if asset_type in {"stock", "future"}:
+        price = price if price is not None else parse_market_price(cleaned, ticker)
+    has_clean_trade_details = bool(
+        ticker
+        and price is not None
+        and (
+            contract
+            or asset_type == "future"
+            or (asset_type == "stock" and _has_stock_context(upper))
+        )
+    )
     has_strong_entry = _has_strong_entry(upper, has_clean_trade_details)
     has_strong_add = _has_strong_add(upper, price, contract_match)
+    has_forward_entry = _has_forward_entry_context(upper)
     has_runner_trim = _looks_like_runner_trim(upper)
 
     # Watchlist-style posts are ignored unless the analyst uses a clear fill/entry word.
-    if has_soft_ignore and not (has_strong_entry or has_strong_add or has_roll or has_exit or has_stop):
+    if has_soft_ignore and not (has_strong_entry or has_strong_add or has_roll or has_exit or has_stop or has_runner_trim):
+        return None
+    if has_forward_entry and not (has_strong_entry or has_strong_add or has_roll or has_exit or has_stop):
         return None
 
     # Exit/stop words win over broad entry words, so "taking a trim" is not routed as a new entry.
@@ -731,6 +833,9 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
         explicit_full_close = re.search(r"\b(ALL OUT|CLOSED|CLOSING|EXIT|EXITED|EXITING|FULL(?:Y)? OUT|BREAKEVEN EXIT|BREAK EVEN EXIT|B/E|AT B/E|AT BE|AT EVEN)\b", upper)
         trim_like_exit = (
             _contains_any(upper, ("TRIM", "TRIMMED", "TRIMMING", "SCALED", "SCALE OUT", "SCALING OUT", "LOCK PROFITS", "LOCKING PROFITS", "PROFIT TAKING"))
+            or re.search(r"\bLOCK(?:ING)?\s+SOME\s+PROFITS?\b", upper)
+            or re.search(r"\bREDUCE\s+RISK\b", upper)
+            or re.search(r"\bTAKE\s+\d{1,3}%\s+OFF\b", upper)
             or re.search(r"\bSCAL(?:E|ING)\s+SOME\s+OUT\b", upper)
             or re.search(r"\b(?:TAK(?:E|ING|EN|E SOME|ING SOME)|TOOK|SELL(?:ING)?|SOLD)\s+(?:SOME|PROFITS?)\b", upper)
             or re.search(r"\bSOME\s+OFF\b", upper)
@@ -742,9 +847,9 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
             action = "trim"
         price = parse_exit_price(cleaned)
     elif has_strong_add:
-        if re.search(r"\bAVERAG(?:E|ED|ING)\s+DOWN\b", upper):
+        if re.search(r"\b(?:AVG|AVERAG(?:E|ED|ING))\s+DOWN\b|\bDOUBLE\s+DOWN\b|\bADDING\s+LOWER\b", upper):
             action = "average_down"
-        elif re.search(r"\bAVERAG(?:E|ED|ING)\s+UP\b", upper):
+        elif re.search(r"\b(?:AVG|AVERAG(?:E|ED|ING))\s+UP\b|\bADDING\s+HIGHER\b", upper):
             action = "average_up"
         else:
             action = "add"
@@ -755,26 +860,29 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
     else:
         return None
 
+    if asset_type in {"stock", "future"} and price is None:
+        price = parse_market_price(cleaned, ticker)
+
     confidence = "high"
     if action in {"trim", "close", "exit", "stop"} and not (ticker or contract_match):
         confidence = "medium"
     if action in {"trim", "close"} and has_strong_entry and (has_exit or has_runner_trim):
         confidence = "medium"
-    if action in {"add", "average_down", "average_up"} and (price is None or not (ticker or contract_match)):
+    if action in {"add", "average_down", "average_up"} and (price is None or not (ticker or contract_match or asset_type in {"stock", "future"})):
         confidence = "medium"
     if action == "roll_option" and not (contract and (expiration or price is not None)):
         confidence = "medium"
 
     # Avoid routing generic chat like "I entered..." when no tradable details were found.
-    if action == "entry" and not has_clean_trade_details and not (ticker and (contract or price is not None)):
+    if action == "entry" and not has_clean_trade_details and not (ticker and (contract or (price is not None and asset_type in {"stock", "future"}))):
         return None
-    if action == "entry" and price is None and _contains_any(upper, FORWARD_ENTRY_WORDS):
+    if action == "entry" and has_forward_entry and not has_strong_entry:
         return None
     if action in {"add", "average_down", "average_up"} and _has_forward_add_context(upper):
         return None
 
     trade_note = parse_position_note(raw) if action in {"trim", "close"} else parse_trade_note(raw)
-    expiration, trade_note = apply_default_expiration_and_note(action, expiration, trade_note)
+    expiration, trade_note = apply_default_expiration_and_note(action, expiration, trade_note, asset_type)
 
     return ParsedAlert(
         action=action,
@@ -789,6 +897,7 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
         old_expiration=roll_details.get("old_expiration") if roll_details else None,
         roll_cost=roll_details.get("roll_cost") if roll_details else None,
         roll_cost_type=roll_details.get("roll_cost_type") if roll_details else None,
+        asset_type=asset_type,
     )
 
 
