@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 from dataclasses import replace
 from typing import Optional
@@ -25,6 +26,13 @@ from views import AutoTakenEntryAlertView, EntryAlertView, ExitAlertView, Review
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("signalflow")
+
+
+def _env_enabled(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class SignalFlowBot(commands.Bot):
@@ -68,7 +76,16 @@ class SignalFlowBot(commands.Bot):
             log.info("Synced %s global slash commands", len(synced))
 
     async def on_ready(self) -> None:
+        for guild in self.guilds:
+            self.db.update_guild_metadata(guild.id, guild.name, guild.icon.url if guild.icon else None)
+            for row in self.db.get_channel_map(guild.id):
+                channel = guild.get_channel(int(row["channel_id"]))
+                if isinstance(channel, discord.TextChannel):
+                    self.db.update_analyst_channel_name(guild.id, channel.id, channel.name)
         log.info("SignalFlow is online as %s", self.user)
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        self.db.update_guild_metadata(guild.id, guild.name, guild.icon.url if guild.icon else None)
 
     def _confidence_level(self, confidence: str) -> str:
         value = (confidence or "high").lower()
@@ -87,9 +104,13 @@ class SignalFlowBot(commands.Bot):
             return
 
         examples = self.db.list_classifier_examples(message.guild.id)
-        parsed = await classify_alert(message.content, examples)
+        alert_text = self._message_text_for_classification(message)
+        if not alert_text.strip():
+            return
+
+        parsed = await classify_alert(alert_text, examples)
         if not parsed or self._needs_image_context(parsed):
-            image_parsed = await self._classify_image_attachments(message, examples)
+            image_parsed = await self._classify_image_attachments(message, examples, alert_text)
             if image_parsed:
                 parsed = image_parsed
         if not parsed:
@@ -116,11 +137,36 @@ class SignalFlowBot(commands.Bot):
         routed = await self.route_alert(message.guild, analyst, parsed, message.channel.id, message.id, context_resolved=True)
         log.info("Routed %s alert from %s to %s user(s)", parsed.action, analyst.name, routed)
 
-    async def _classify_image_attachments(self, message: discord.Message, examples) -> Optional[ParsedAlert]:
+    def _message_text_for_classification(self, message: discord.Message) -> str:
+        parts: list[str] = []
+
+        def add(value: Optional[str]) -> None:
+            clean = (value or "").strip()
+            if clean:
+                parts.append(clean)
+
+        add(message.content)
+        for embed in message.embeds:
+            add(embed.author.name if embed.author else None)
+            add(embed.title)
+            add(embed.description)
+            for field in embed.fields:
+                name = (field.name or "").strip()
+                value = (field.value or "").strip()
+                if name and value:
+                    add(f"{name}: {value}")
+                else:
+                    add(name or value)
+            add(embed.footer.text if embed.footer else None)
+
+        unique_parts = list(dict.fromkeys(parts))
+        return "\n\n".join(unique_parts)
+
+    async def _classify_image_attachments(self, message: discord.Message, examples, context: Optional[str] = None) -> Optional[ParsedAlert]:
         for attachment in message.attachments:
             if not self._is_supported_image_attachment(attachment):
                 continue
-            parsed = await classify_image_alert(attachment.url, message.content, examples)
+            parsed = await classify_image_alert(attachment.url, context or message.content, examples)
             if parsed:
                 return parsed
         return None
@@ -159,9 +205,10 @@ class SignalFlowBot(commands.Bot):
             log.warning("Review channel %s is not available", channel_id)
             return
 
+        guild_name, _, _ = self._guild_theme(guild)
         try:
             await channel.send(
-                embed=review_alert_embed(analyst, parsed, guild_name=guild.name),
+                embed=review_alert_embed(analyst, parsed, guild_name=guild_name),
                 view=ReviewAlertView(self.db, guild.id, analyst, parsed, source_channel_id, source_message_id),
             )
         except discord.HTTPException:
@@ -192,6 +239,21 @@ class SignalFlowBot(commands.Bot):
     def _logo_url(self) -> Optional[str]:
         return self.user.display_avatar.url if self.user else None
 
+    def _parse_brand_color(self, raw_color: Optional[str]) -> Optional[int]:
+        if not raw_color:
+            return None
+        value = raw_color.strip().lstrip("#")
+        if not re.fullmatch(r"[0-9a-fA-F]{6}", value):
+            return None
+        return int(value, 16)
+
+    def _guild_theme(self, guild: discord.Guild) -> tuple[str, Optional[str], Optional[int]]:
+        settings = self.db.get_guild_settings(guild.id)
+        display_name = (settings["dashboard_display_name"] or guild.name).strip()
+        logo_url = (settings["dashboard_logo_url"] or "").strip() or self._logo_url()
+        brand_color = self._parse_brand_color(settings["dashboard_embed_color"])
+        return display_name, logo_url, brand_color
+
     async def _resolve_discord_user(self, user_id: int) -> Optional[discord.User]:
         user = self.get_user(user_id)
         if user:
@@ -206,7 +268,9 @@ class SignalFlowBot(commands.Bot):
 
     def _apply_analyst_rule_hooks(self, analyst: Analyst, parsed: ParsedAlert) -> ParsedAlert:
         # Hook point for analyst-specific overrides without changing the shared parser.
-        # Example later: if analyst.name.lower() == "randumb": return replace(parsed, ...)
+        analyst_name = (analyst.name or "").lower()
+        if ("mr m" in analyst_name or "mrm" in analyst_name) and parsed.asset_type == "unknown" and parsed.ticker and not parsed.contract:
+            return replace(parsed, asset_type="stock")
         return parsed
 
     def _should_keep_review_confidence(self, parsed: ParsedAlert) -> bool:
@@ -300,8 +364,8 @@ class SignalFlowBot(commands.Bot):
 
     async def _route_entry_alert(self, guild: discord.Guild, analyst: Analyst, parsed: ParsedAlert, alert_id: int) -> int:
         routed = 0
-        logo_url = self._logo_url()
-        embed = entry_alert_embed(analyst, parsed, guild_name=guild.name, logo_url=logo_url)
+        guild_name, logo_url, brand_color = self._guild_theme(guild)
+        embed = entry_alert_embed(analyst, parsed, guild_name=guild_name, logo_url=logo_url, brand_color=brand_color)
         for user_id in self.db.subscribed_users(guild.id, analyst.id):
             user = await self._resolve_discord_user(user_id)
             if not user:
@@ -330,7 +394,7 @@ class SignalFlowBot(commands.Bot):
             return 0
 
         routed = 0
-        logo_url = self._logo_url()
+        guild_name, logo_url, brand_color = self._guild_theme(guild)
         for user_id in self.db.subscribed_users(guild.id, analyst.id):
             positions = self.db.find_open_positions_for_entry_alert(guild.id, user_id, analyst_entry["id"])
             if not positions:
@@ -348,8 +412,9 @@ class SignalFlowBot(commands.Bot):
                         analyst,
                         parsed,
                         reference_price=reference_price,
-                        guild_name=guild.name,
+                        guild_name=guild_name,
                         logo_url=logo_url,
+                        brand_color=brand_color,
                     ),
                     view=ExitAlertView(self.db, guild.id, position["id"], alert_id),
                 )
@@ -379,7 +444,7 @@ class SignalFlowBot(commands.Bot):
         self.db.mark_entry_alert_rolled(old_entry["id"], alert_id)
 
         routed = 0
-        logo_url = self._logo_url()
+        guild_name, logo_url, brand_color = self._guild_theme(guild)
         for user_id in self.db.subscribed_users(guild.id, analyst.id):
             positions = self.db.find_open_positions_for_entry_alert(guild.id, user_id, old_entry["id"])
             if not positions:
@@ -400,8 +465,9 @@ class SignalFlowBot(commands.Bot):
                         old_contract=parsed.old_contract or old_entry["contract"],
                         old_expiration=parsed.old_expiration or old_entry["expiration"],
                         old_price=old_price,
-                        guild_name=guild.name,
+                        guild_name=guild_name,
                         logo_url=logo_url,
+                        brand_color=brand_color,
                     ),
                     view=ExitAlertView(self.db, guild.id, position["id"], alert_id),
                 )
@@ -491,12 +557,14 @@ class SignalFlowBot(commands.Bot):
         if not deliveries:
             return
 
+        guild_name, logo_url, brand_color = self._guild_theme(guild)
         embed = closed_entry_alert_embed(
             analyst,
             self._entry_row_to_parsed_alert(analyst_entry),
             close_action=close_action,
-            guild_name=guild.name,
-            logo_url=self._logo_url(),
+            guild_name=guild_name,
+            logo_url=logo_url,
+            brand_color=brand_color,
         )
         delivery_status = "rolled" if close_action == "roll_option" else "closed"
 
@@ -533,7 +601,7 @@ class SignalFlowBot(commands.Bot):
         if closes_analyst_trade and analyst_entry:
             self.db.close_entry_alert(analyst_entry["id"])
 
-        logo_url = self._logo_url()
+        guild_name, logo_url, brand_color = self._guild_theme(guild)
         for user_id in self.db.subscribed_users(guild.id, analyst.id):
             if analyst_entry:
                 positions = self.db.find_open_positions_for_entry_alert(guild.id, user_id, analyst_entry["id"])
@@ -580,8 +648,9 @@ class SignalFlowBot(commands.Bot):
                         display_parsed,
                         possible=False,
                         gain_pct=gain_pct,
-                        guild_name=guild.name,
+                        guild_name=guild_name,
                         logo_url=logo_url,
+                        brand_color=brand_color,
                     ),
                     view=view,
                 )
@@ -600,6 +669,17 @@ class SignalFlowBot(commands.Bot):
 def main() -> None:
     config = load_config()
     db = Database(config.database_path)
+    dashboard_default = bool(os.getenv("PORT"))
+    if _env_enabled("ENABLE_WEB_DASHBOARD", dashboard_default):
+        try:
+            from web_dashboard import start_dashboard_background
+
+            start_dashboard_background()
+        except Exception:
+            log.exception("Failed to start SignalFlow web dashboard")
+            if dashboard_default:
+                raise
+
     bot = SignalFlowBot(
         db=db,
         guild_id=config.guild_id,

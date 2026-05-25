@@ -1,3 +1,4 @@
+import secrets
 import sqlite3
 from pathlib import Path
 from typing import Iterable, Optional
@@ -23,7 +24,10 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS guilds (
                     guild_id INTEGER PRIMARY KEY,
+                    guild_name TEXT,
+                    guild_icon_url TEXT,
                     review_channel_id INTEGER,
+                    review_channel_name TEXT,
                     is_active INTEGER NOT NULL DEFAULT 1,
                     disabled_reason TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -44,6 +48,7 @@ class Database:
                     guild_id INTEGER NOT NULL,
                     analyst_id INTEGER NOT NULL,
                     channel_id INTEGER NOT NULL,
+                    channel_name TEXT,
                     PRIMARY KEY(guild_id, channel_id),
                     FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE,
                     FOREIGN KEY(analyst_id) REFERENCES analysts(id) ON DELETE CASCADE
@@ -186,8 +191,25 @@ class Database:
                 """
             )
             self._ensure_column(conn, "analysts", "discord_user_id", "INTEGER")
+            self._ensure_column(conn, "guilds", "guild_name", "TEXT")
+            self._ensure_column(conn, "guilds", "guild_icon_url", "TEXT")
+            self._ensure_column(conn, "guilds", "review_channel_name", "TEXT")
             self._ensure_column(conn, "guilds", "is_active", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(conn, "guilds", "disabled_reason", "TEXT")
+            self._ensure_column(conn, "guilds", "dashboard_token", "TEXT")
+            self._ensure_column(conn, "guilds", "dashboard_display_name", "TEXT")
+            self._ensure_column(conn, "guilds", "dashboard_logo_url", "TEXT")
+            self._ensure_column(conn, "guilds", "dashboard_embed_color", "TEXT")
+            self._ensure_column(conn, "guilds", "recap_brand_name", "TEXT")
+            self._ensure_column(conn, "guilds", "recap_footer", "TEXT")
+            self._ensure_column(conn, "guilds", "customer_name", "TEXT")
+            self._ensure_column(conn, "guilds", "customer_email", "TEXT")
+            self._ensure_column(conn, "guilds", "customer_discord", "TEXT")
+            self._ensure_column(conn, "guilds", "plan_name", "TEXT")
+            self._ensure_column(conn, "guilds", "monthly_price", "REAL")
+            self._ensure_column(conn, "guilds", "billing_status", "TEXT")
+            self._ensure_column(conn, "guilds", "current_period_end", "TEXT")
+            self._ensure_column(conn, "guilds", "billing_notes", "TEXT")
             self._ensure_column(conn, "alert_logs", "trade_note", "TEXT")
             self._ensure_column(conn, "alert_logs", "asset_type", "TEXT NOT NULL DEFAULT 'option'")
             self._ensure_column(conn, "alert_logs", "status", "TEXT NOT NULL DEFAULT 'open'")
@@ -202,6 +224,7 @@ class Database:
             self._ensure_column(conn, "user_positions", "average_price", "REAL")
             self._ensure_column(conn, "user_positions", "add_count", "INTEGER NOT NULL DEFAULT 1")
             self._ensure_column(conn, "position_events", "asset_type", "TEXT NOT NULL DEFAULT 'option'")
+            self._ensure_column(conn, "analyst_channels", "channel_name", "TEXT")
             self._ensure_multi_channel_table(conn)
             self._ensure_indexes(conn)
 
@@ -254,13 +277,14 @@ class Database:
                 guild_id INTEGER NOT NULL,
                 analyst_id INTEGER NOT NULL,
                 channel_id INTEGER NOT NULL,
+                channel_name TEXT,
                 PRIMARY KEY(guild_id, channel_id),
                 FOREIGN KEY(guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE,
                 FOREIGN KEY(analyst_id) REFERENCES analysts(id) ON DELETE CASCADE
             );
 
-            INSERT OR IGNORE INTO analyst_channels_new (guild_id, analyst_id, channel_id)
-            SELECT guild_id, analyst_id, channel_id FROM analyst_channels;
+            INSERT OR IGNORE INTO analyst_channels_new (guild_id, analyst_id, channel_id, channel_name)
+            SELECT guild_id, analyst_id, channel_id, channel_name FROM analyst_channels;
 
             DROP TABLE analyst_channels;
             ALTER TABLE analyst_channels_new RENAME TO analyst_channels;
@@ -276,9 +300,22 @@ class Database:
             discord_user_id=row["discord_user_id"],
         )
 
-    def ensure_guild(self, guild_id: int) -> None:
+    def ensure_guild(self, guild_id: int, guild_name: Optional[str] = None, icon_url: Optional[str] = None) -> None:
         with self.connect() as conn:
             conn.execute("INSERT OR IGNORE INTO guilds (guild_id) VALUES (?)", (guild_id,))
+            if guild_name is not None or icon_url is not None:
+                conn.execute(
+                    """
+                    UPDATE guilds
+                    SET guild_name = COALESCE(?, guild_name),
+                        guild_icon_url = COALESCE(?, guild_icon_url)
+                    WHERE guild_id = ?
+                    """,
+                    ((guild_name or "").strip() or None, (icon_url or "").strip() or None, guild_id),
+                )
+
+    def update_guild_metadata(self, guild_id: int, guild_name: Optional[str] = None, icon_url: Optional[str] = None) -> None:
+        self.ensure_guild(guild_id, guild_name, icon_url)
 
     def is_guild_active(self, guild_id: int) -> bool:
         self.ensure_guild(guild_id)
@@ -294,16 +331,130 @@ class Database:
                 (1 if is_active else 0, None if is_active else reason, guild_id),
             )
 
+    def get_guild_settings(self, guild_id: int) -> sqlite3.Row:
+        self.ensure_guild(guild_id)
+        with self.connect() as conn:
+            return conn.execute("SELECT * FROM guilds WHERE guild_id = ?", (guild_id,)).fetchone()
+
+    def update_guild_dashboard_settings(
+        self,
+        guild_id: int,
+        display_name: Optional[str] = None,
+        logo_url: Optional[str] = None,
+        embed_color: Optional[str] = None,
+        recap_brand_name: Optional[str] = None,
+        recap_footer: Optional[str] = None,
+    ) -> None:
+        self.ensure_guild(guild_id)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE guilds
+                SET dashboard_display_name = ?,
+                    dashboard_logo_url = ?,
+                    dashboard_embed_color = ?,
+                    recap_brand_name = ?,
+                    recap_footer = ?
+                WHERE guild_id = ?
+                """,
+                (
+                    (display_name or "").strip() or None,
+                    (logo_url or "").strip() or None,
+                    (embed_color or "").strip() or None,
+                    (recap_brand_name or "").strip() or None,
+                    (recap_footer or "").strip() or None,
+                    guild_id,
+                ),
+            )
+
+    def update_guild_billing(
+        self,
+        guild_id: int,
+        customer_name: Optional[str] = None,
+        customer_email: Optional[str] = None,
+        customer_discord: Optional[str] = None,
+        plan_name: Optional[str] = None,
+        monthly_price: Optional[float] = None,
+        billing_status: Optional[str] = None,
+        current_period_end: Optional[str] = None,
+        billing_notes: Optional[str] = None,
+    ) -> None:
+        self.ensure_guild(guild_id)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE guilds
+                SET customer_name = ?,
+                    customer_email = ?,
+                    customer_discord = ?,
+                    plan_name = ?,
+                    monthly_price = ?,
+                    billing_status = ?,
+                    current_period_end = ?,
+                    billing_notes = ?
+                WHERE guild_id = ?
+                """,
+                (
+                    (customer_name or "").strip() or None,
+                    (customer_email or "").strip() or None,
+                    (customer_discord or "").strip() or None,
+                    (plan_name or "").strip() or None,
+                    monthly_price,
+                    (billing_status or "").strip() or None,
+                    (current_period_end or "").strip() or None,
+                    (billing_notes or "").strip() or None,
+                    guild_id,
+                ),
+            )
+
+    def list_owner_guilds(self) -> list[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT
+                    g.*,
+                    COUNT(DISTINCT a.id) AS analyst_count,
+                    COUNT(DISTINCT ac.channel_id) AS mapped_channel_count,
+                    COUNT(DISTINCT ce.id) AS example_count
+                FROM guilds g
+                LEFT JOIN analysts a ON a.guild_id = g.guild_id AND a.is_active = 1
+                LEFT JOIN analyst_channels ac ON ac.guild_id = g.guild_id
+                LEFT JOIN classifier_examples ce ON ce.guild_id = g.guild_id
+                GROUP BY g.guild_id
+                ORDER BY COALESCE(g.guild_name, g.dashboard_display_name, CAST(g.guild_id AS TEXT))
+                """
+            ).fetchall()
+
+    def get_or_create_dashboard_token(self, guild_id: int) -> str:
+        self.ensure_guild(guild_id)
+        with self.connect() as conn:
+            row = conn.execute("SELECT dashboard_token FROM guilds WHERE guild_id = ?", (guild_id,)).fetchone()
+            if row and row["dashboard_token"]:
+                return str(row["dashboard_token"])
+            token = secrets.token_urlsafe(32)
+            conn.execute("UPDATE guilds SET dashboard_token = ? WHERE guild_id = ?", (token, guild_id))
+            return token
+
+    def rotate_dashboard_token(self, guild_id: int) -> str:
+        self.ensure_guild(guild_id)
+        token = secrets.token_urlsafe(32)
+        with self.connect() as conn:
+            conn.execute("UPDATE guilds SET dashboard_token = ? WHERE guild_id = ?", (token, guild_id))
+        return token
+
     def list_guild_statuses(self) -> list[sqlite3.Row]:
         with self.connect() as conn:
             return conn.execute(
                 "SELECT guild_id, is_active, disabled_reason FROM guilds ORDER BY guild_id"
             ).fetchall()
 
-    def set_review_channel(self, guild_id: int, channel_id: int) -> None:
+    def set_review_channel(self, guild_id: int, channel_id: int, channel_name: Optional[str] = None) -> None:
         self.ensure_guild(guild_id)
         with self.connect() as conn:
-            conn.execute("UPDATE guilds SET review_channel_id = ? WHERE guild_id = ?", (channel_id, guild_id))
+            conn.execute(
+                "UPDATE guilds SET review_channel_id = ?, review_channel_name = ? WHERE guild_id = ?",
+                (channel_id, (channel_name or "").strip() or None, guild_id),
+            )
 
     def get_review_channel_id(self, guild_id: int) -> Optional[int]:
         self.ensure_guild(guild_id)
@@ -458,7 +609,13 @@ class Database:
             ).fetchall()
         return [self._row_to_analyst(row) for row in rows]
 
-    def set_analyst_channel(self, guild_id: int, analyst_id: int, channel_id: int) -> Optional[Analyst]:
+    def set_analyst_channel(
+        self,
+        guild_id: int,
+        analyst_id: int,
+        channel_id: int,
+        channel_name: Optional[str] = None,
+    ) -> Optional[Analyst]:
         self.ensure_guild(guild_id)
         with self.connect() as conn:
             previous = conn.execute(
@@ -472,13 +629,32 @@ class Database:
             ).fetchone()
             conn.execute(
                 """
-                INSERT INTO analyst_channels (guild_id, analyst_id, channel_id)
-                VALUES (?, ?, ?)
-                ON CONFLICT(guild_id, channel_id) DO UPDATE SET analyst_id = excluded.analyst_id
+                INSERT INTO analyst_channels (guild_id, analyst_id, channel_id, channel_name)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guild_id, channel_id) DO UPDATE SET
+                    analyst_id = excluded.analyst_id,
+                    channel_name = COALESCE(excluded.channel_name, analyst_channels.channel_name)
                 """,
-                (guild_id, analyst_id, channel_id),
+                (guild_id, analyst_id, channel_id, (channel_name or "").strip() or None),
             )
         return self._row_to_analyst(previous) if previous else None
+
+    def update_analyst_channel_name(self, guild_id: int, channel_id: int, channel_name: Optional[str]) -> None:
+        if not channel_name:
+            return
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE analyst_channels SET channel_name = ? WHERE guild_id = ? AND channel_id = ?",
+                (channel_name.strip(), guild_id, channel_id),
+            )
+
+    def remove_analyst_channel(self, guild_id: int, channel_id: int) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM analyst_channels WHERE guild_id = ? AND channel_id = ?",
+                (guild_id, channel_id),
+            )
+            return cur.rowcount > 0
 
     def get_analyst_for_channel(self, guild_id: int, channel_id: int) -> Optional[Analyst]:
         with self.connect() as conn:
@@ -496,7 +672,7 @@ class Database:
         with self.connect() as conn:
             return conn.execute(
                 """
-                SELECT a.id AS analyst_id, a.name, ac.channel_id
+                SELECT a.id AS analyst_id, a.name, a.discord_user_id, ac.channel_id, ac.channel_name
                 FROM analyst_channels ac
                 JOIN analysts a ON a.id = ac.analyst_id
                 WHERE ac.guild_id = ? AND a.is_active = 1

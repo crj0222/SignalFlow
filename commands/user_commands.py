@@ -4,8 +4,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from analytics import build_analyst_stats
 from database import Database
-from embeds import help_embed, list_embed, start_embed, success_embed, warning_embed
+from embeds import analyst_stats_embed, help_embed, list_embed, start_embed, success_embed, warning_embed
 from models import Analyst
 from views import AnalystSelectView, build_analyst_picker_embed
 
@@ -60,6 +61,40 @@ class UserCommands(commands.Cog):
 
         return resolved
 
+    def _display_user_name(self, user: discord.User | discord.Member) -> str:
+        return _clean_name(getattr(user, "display_name", None) or getattr(user, "global_name", None) or user.name)
+
+    def _guild_display_name_and_color(self, interaction: discord.Interaction) -> tuple[str | None, int | None]:
+        if not interaction.guild_id:
+            return None, None
+        settings = self.db.get_guild_settings(interaction.guild_id)
+        guild_name = getattr(interaction.guild, "name", None)
+        display_name = (settings["dashboard_display_name"] or guild_name) if settings else guild_name
+        raw_color = (settings["dashboard_embed_color"] or "").strip() if settings else ""
+        if raw_color.startswith("#"):
+            raw_color = raw_color[1:]
+        brand_color = int(raw_color, 16) if re.fullmatch(r"[0-9a-fA-F]{6}", raw_color) else None
+        return display_name, brand_color
+
+    def _resolve_configured_analyst(self, interaction: discord.Interaction, analyst: discord.User | discord.Member) -> Analyst | None:
+        if not interaction.guild_id:
+            return None
+
+        analyst_row = self.db.get_analyst_by_user_id(interaction.guild_id, analyst.id)
+        if analyst_row:
+            return analyst_row
+
+        names_to_try = [
+            getattr(analyst, "display_name", None),
+            getattr(analyst, "global_name", None),
+            analyst.name,
+        ]
+        for name in [name for name in names_to_try if name]:
+            analyst_row = self.db.get_analyst_by_name(interaction.guild_id, name)
+            if analyst_row:
+                return analyst_row
+        return None
+
     @app_commands.command(name="start", description="Learn what SignalFlow does.")
     async def start(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_message(embed=start_embed(), ephemeral=True)
@@ -106,18 +141,7 @@ class UserCommands(commands.Cog):
             await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
             return
 
-        analyst_row = self.db.get_analyst_by_user_id(interaction.guild_id, analyst.id)
-        if not analyst_row:
-            names_to_try = [
-                getattr(analyst, "display_name", None),
-                getattr(analyst, "global_name", None),
-                analyst.name,
-            ]
-            for name in [name for name in names_to_try if name]:
-                analyst_row = self.db.get_analyst_by_name(interaction.guild_id, name)
-                if analyst_row:
-                    break
-
+        analyst_row = self._resolve_configured_analyst(interaction, analyst)
         if not analyst_row:
             await interaction.response.send_message(
                 embed=warning_embed("That analyst is not configured in this server."),
@@ -145,10 +169,39 @@ class UserCommands(commands.Cog):
 
         await interaction.response.send_message(
             embed=list_embed(
-                f"{_clean_name(getattr(analyst, 'display_name', None) or analyst.global_name or analyst.name)} Current Positions",
+                f"{self._display_user_name(analyst)} Current Positions",
                 lines,
                 "No open SignalFlow trades are currently tracked for this analyst.",
             ),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="analyst_stats", description="Show closed-trade performance stats for an analyst.")
+    async def analyst_stats(self, interaction: discord.Interaction, analyst: discord.User) -> None:
+        if not interaction.guild_id or not interaction.guild:
+            await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
+            return
+
+        analyst_row = self._resolve_configured_analyst(interaction, analyst)
+        if not analyst_row:
+            await interaction.response.send_message(
+                embed=warning_embed("That analyst is not configured in this server."),
+                ephemeral=True,
+            )
+            return
+
+        stats_list = build_analyst_stats(self.db.path, interaction.guild_id, analyst_row.id)
+        stats = stats_list[0] if stats_list else None
+        if not stats:
+            await interaction.response.send_message(
+                embed=warning_embed("No tracked entries or closed trades found for this analyst yet."),
+                ephemeral=True,
+            )
+            return
+
+        guild_name, brand_color = self._guild_display_name_and_color(interaction)
+        await interaction.response.send_message(
+            embed=analyst_stats_embed(self._display_user_name(analyst), stats, guild_name=guild_name, brand_color=brand_color),
             ephemeral=True,
         )
 

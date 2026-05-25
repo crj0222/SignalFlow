@@ -527,6 +527,10 @@ def parse_trade_note(text: str) -> str:
         notes.append("Lotto")
     if re.search(r"\b(HALF[-\s]*(?:SIZE|SIZED|POS(?:ITION)?))\b|\b1/2[-\s]*(?:SIZE|SIZED|POS(?:ITION)?)\b", upper):
         notes.append("Half Size")
+    if re.search(r"\b1/3[-\s]*(?:SIZE|SIZED|POS(?:ITION)?)\b", upper):
+        notes.append("1/3 Size")
+    if re.search(r"\b1/4[-\s]*(?:SIZE|SIZED|POS(?:ITION)?)\b", upper):
+        notes.append("1/4 Size")
     if re.search(r"\b(LIGHT|SMALL|SMALL SIZE|STARTER|STARTER SIZE|SMALLER SIZE)\b", upper):
         notes.append("Light")
 
@@ -725,6 +729,36 @@ def _has_stock_context(text: str) -> bool:
     return bool(re.search(r"\b(SHARES?|STOCKS?|COMMONS?|EQUITY)\b", text))
 
 
+def _has_structured_stock_entry_setup(text: str) -> bool:
+    has_ticker = bool(re.search(r"\$[A-Z]{1,5}\b|\bTICKER\s*:", text, re.IGNORECASE))
+    has_entry_price = bool(
+        re.search(
+            r"(?:^|[\n|])\s*(?:[^\w$]{0,5}\s*)?ENTRY\s*[:.,-]\s*\$?\d{2,6}(?:\.\d{1,2})?",
+            text,
+            re.IGNORECASE,
+        )
+        or (
+            re.search(r"\bNEW\s+ENTRY\s+IDEA\b", text, re.IGNORECASE)
+            and re.search(r"(?:^|[\n|])\s*(?:[^\w$]{0,5}\s*)?\$?\d{1,6}(?:\.\d{1,2})?\s*$", text, re.IGNORECASE | re.MULTILINE)
+        )
+    )
+    has_trade_plan_context = bool(
+        re.search(
+            r"\b(?:SWING|TRADE\s+IDEA|POSITION|POS|LEVELS?|TARGETS?|SL|STOP\s+LOSS|STOP)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    has_waiting_context = bool(
+        re.search(
+            r"\b(?:NOT\s+IN|WAIT(?:ING)?|MAY\s+ENTER|MIGHT\s+ENTER|POSSIBLE|WATCH(?:ING)?|IF\s+IT|IF\s+WE|IF\s+THIS)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    return has_ticker and has_entry_price and has_trade_plan_context and not has_waiting_context
+
+
 def _has_futures_context(text: str) -> bool:
     return bool(FUTURES_RE.search(text) and re.search(r"\b(LONG|SHORT|FUTURES?|CONTRACTS?|POINTS?)\b", text))
 
@@ -779,6 +813,18 @@ def _looks_like_runner_trim(text: str) -> bool:
     )
 
 
+def _looks_like_level_trim(text: str) -> bool:
+    return bool(
+        re.search(r"\bTICKER\s*:\s*\$?[A-Z]{1,5}\b|\$[A-Z]{1,5}\b", text, re.IGNORECASE)
+        and re.search(
+            r"\b(?:ALL\s+LEVELS?|LEVELS?|TARGETS?|PT)\s*\d*\s*(?:HIT|TAGGED|REACHED|SMACKED)\b",
+            text,
+            re.IGNORECASE,
+        )
+        and GAIN_PERCENT_RE.search(text)
+    )
+
+
 def parse_alert(content: str) -> Optional[ParsedAlert]:
     raw = content.strip()
     if not raw:
@@ -786,6 +832,8 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
 
     cleaned = _strip_alert_noise(raw)
     upper = cleaned.upper()
+    if re.search(r"\bNOTES?\s*/\s*COMMENT\b", upper) and not re.search(r"\bTICKER\s*:", upper):
+        return None
     has_entry = _contains_any(upper, ENTRY_WORDS)
     has_roll = _contains_any(upper, ROLL_WORDS)
     has_exit = _contains_any(upper, EXIT_WORDS)
@@ -796,7 +844,12 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
     expiration = parse_expiration(cleaned)
     ticker = _parse_ticker(upper)
     asset_type = infer_asset_type(ticker, contract, cleaned)
+    structured_stock_entry = _has_structured_stock_entry_setup(cleaned) and not contract
+    if structured_stock_entry:
+        asset_type = "stock"
     price = parse_price(cleaned, contract)
+    if structured_stock_entry:
+        price = parse_market_price(cleaned, ticker) or price
     if asset_type in {"stock", "future"}:
         price = price if price is not None else parse_market_price(cleaned, ticker)
     has_clean_trade_details = bool(
@@ -805,16 +858,17 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
         and (
             contract
             or asset_type == "future"
-            or (asset_type == "stock" and _has_stock_context(upper))
+            or (asset_type == "stock" and (_has_stock_context(upper) or structured_stock_entry))
         )
     )
-    has_strong_entry = _has_strong_entry(upper, has_clean_trade_details)
+    has_strong_entry = _has_strong_entry(upper, has_clean_trade_details) or structured_stock_entry
     has_strong_add = _has_strong_add(upper, price, contract_match)
     has_forward_entry = _has_forward_entry_context(upper)
     has_runner_trim = _looks_like_runner_trim(upper)
+    has_level_trim = _looks_like_level_trim(cleaned)
 
     # Watchlist-style posts are ignored unless the analyst uses a clear fill/entry word.
-    if has_soft_ignore and not (has_strong_entry or has_strong_add or has_roll or has_exit or has_stop or has_runner_trim):
+    if has_soft_ignore and not (has_strong_entry or has_strong_add or has_roll or has_exit or has_stop or has_runner_trim or has_level_trim):
         return None
     if has_forward_entry and not (has_strong_entry or has_strong_add or has_roll or has_exit or has_stop):
         return None
@@ -828,7 +882,7 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
         price = roll_details.get("new_price")
     elif has_stop:
         action = "close"
-    elif has_exit or has_runner_trim:
+    elif has_exit or has_runner_trim or has_level_trim:
         position_note = parse_position_note(cleaned)
         explicit_full_close = re.search(r"\b(ALL OUT|CLOSED|CLOSING|EXIT|EXITED|EXITING|FULL(?:Y)? OUT|BREAKEVEN EXIT|BREAK EVEN EXIT|B/E|AT B/E|AT BE|AT EVEN)\b", upper)
         trim_like_exit = (
@@ -845,7 +899,14 @@ def parse_alert(content: str) -> Optional[ParsedAlert]:
             action = "trim"
         if has_runner_trim and not has_exit:
             action = "trim"
+        if has_level_trim:
+            action = "trim"
+            price = None
         price = parse_exit_price(cleaned)
+        if has_level_trim:
+            price = None
+    elif structured_stock_entry:
+        action = "entry"
     elif has_strong_add:
         if re.search(r"\b(?:AVG|AVERAG(?:E|ED|ING))\s+DOWN\b|\bDOUBLE\s+DOWN\b|\bADDING\s+LOWER\b", upper):
             action = "average_down"

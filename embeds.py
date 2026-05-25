@@ -3,6 +3,7 @@ from typing import Optional
 
 import discord
 
+from analytics import AnalystStats, format_pct, format_trade_result
 from models import Analyst, ParsedAlert
 
 
@@ -67,6 +68,10 @@ def _money(value: Optional[float]) -> str:
     return f"${value:.2f}" if value is not None else "Not detected"
 
 
+def _color(brand_color: Optional[int], default: int = BRAND_COLOR) -> int:
+    return brand_color if brand_color is not None else default
+
+
 def _roll_cost_line(parsed: ParsedAlert) -> str:
     if parsed.roll_cost is None:
         return "Not detected"
@@ -118,7 +123,7 @@ def help_embed() -> discord.Embed:
     )
     embed.add_field(
         name="User commands",
-        value="`/select_analysts`\n`/my_alerts`\n`/current_positions`\n`/pause_alerts`\n`/resume_alerts`",
+        value="`/select_analysts`\n`/my_alerts`\n`/current_positions`\n`/analyst_stats`\n`/pause_alerts`\n`/resume_alerts`",
         inline=True,
     )
     embed.add_field(
@@ -140,6 +145,7 @@ def entry_alert_embed(
     parsed: ParsedAlert,
     guild_name: Optional[str] = None,
     logo_url: Optional[str] = None,
+    brand_color: Optional[int] = None,
 ) -> discord.Embed:
     side = _instrument_label(parsed)
     style = _value(parsed.trade_note)
@@ -149,7 +155,7 @@ def entry_alert_embed(
     embed = discord.Embed(
         title=f"{ALERT_EMOJI} {side} Entry",
         description=description,
-        color=BRAND_COLOR,
+        color=_color(brand_color),
     )
     embed.add_field(name="Entry", value=_price_line(parsed), inline=True)
     if parsed.asset_type == "option":
@@ -168,6 +174,7 @@ def closed_entry_alert_embed(
     close_action: Optional[str] = None,
     guild_name: Optional[str] = None,
     logo_url: Optional[str] = None,
+    brand_color: Optional[int] = None,
 ) -> discord.Embed:
     normalized_action = (close_action or "").lower()
     if normalized_action == "roll_option":
@@ -189,7 +196,7 @@ def closed_entry_alert_embed(
     else:
         title = "Trade Closed"
         status = "Closed by analyst" if normalized_action in {"close", "exit"} else "No longer active"
-        color = MUTED_COLOR
+        color = _color(brand_color, MUTED_COLOR)
 
     embed = discord.Embed(
         title=f"{BELL_EMOJI} {title}",
@@ -211,6 +218,7 @@ def exit_alert_embed(
     gain_pct: Optional[float] = None,
     guild_name: Optional[str] = None,
     logo_url: Optional[str] = None,
+    brand_color: Optional[int] = None,
 ) -> discord.Embed:
     if parsed.action == "trim":
         title = f"{WARNING_EMOJI} Possible Trim Alert" if possible else f"{BELL_EMOJI} Trim Alert"
@@ -225,7 +233,7 @@ def exit_alert_embed(
         title = f"{WARNING_EMOJI} Possible Close Alert" if possible else f"{BELL_EMOJI} Trade Closed"
         top_note = "Position closed"
 
-    color = WARNING_COLOR if possible else BRAND_COLOR
+    color = WARNING_COLOR if possible else _color(brand_color)
     if parsed.action != "trim" and gain_pct is not None:
         color = SUCCESS_COLOR if gain_pct >= 0 else LOSS_COLOR
     if parsed.action != "trim" and _is_breakeven_like(parsed):
@@ -258,6 +266,7 @@ def position_update_embed(
     reference_price: Optional[float] = None,
     guild_name: Optional[str] = None,
     logo_url: Optional[str] = None,
+    brand_color: Optional[int] = None,
 ) -> discord.Embed:
     title_map = {
         "average_down": f"{BELL_EMOJI} Average Down",
@@ -267,7 +276,7 @@ def position_update_embed(
     embed = discord.Embed(
         title=title_map.get(parsed.action, f"{BELL_EMOJI} Position Update"),
         description=f"**{_trade_line(parsed)}**",
-        color=BRAND_COLOR,
+        color=_color(brand_color),
     )
     embed.add_field(name="Add Price", value=_price_line(parsed), inline=True)
     embed.add_field(name="Tracked Avg", value=_money(reference_price), inline=True)
@@ -286,6 +295,7 @@ def roll_alert_embed(
     old_price: Optional[float] = None,
     guild_name: Optional[str] = None,
     logo_url: Optional[str] = None,
+    brand_color: Optional[int] = None,
 ) -> discord.Embed:
     old_parts = [part for part in [old_ticker or parsed.ticker, old_expiration, old_contract] if part]
     old_line = " ".join(old_parts) if old_parts else "Most recent tracked position"
@@ -295,7 +305,7 @@ def roll_alert_embed(
     embed = discord.Embed(
         title=f"{BELL_EMOJI} Option Roll",
         description=f"**{_trade_line(parsed)}**",
-        color=BRAND_COLOR,
+        color=_color(brand_color),
     )
     embed.add_field(name="Old", value=old_line, inline=False)
     embed.add_field(name="New", value=_trade_line(parsed), inline=False)
@@ -344,5 +354,61 @@ def warning_embed(message: str) -> discord.Embed:
 
 def list_embed(title: str, lines: list[str], empty: str) -> discord.Embed:
     embed = discord.Embed(title=title, description="\n".join(lines) if lines else empty, color=BRAND_COLOR)
+    _set_footer(embed)
+    return embed
+
+
+def analyst_stats_embed(
+    name: str,
+    stats: AnalystStats,
+    guild_name: Optional[str] = None,
+    brand_color: Optional[int] = None,
+) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"{name} Analyst Stats",
+        description="Closed trades only. Trim-only updates are tracked but not counted as wins or losses.",
+        color=_color(brand_color),
+    )
+    embed.add_field(
+        name="Record",
+        value=(
+            f"**{stats.wins}W / {stats.losses}L**"
+            f"{f' / {stats.breakevens}B/E' if stats.breakevens else ''}\n"
+            f"Closed `{stats.closed_trades}`\n"
+            f"Win Rate `{format_pct(stats.win_rate)}`\n"
+            f"Open `{stats.open_trades}`"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Averages",
+        value=(
+            f"Avg Return `{format_pct(stats.avg_return_pct)}`\n"
+            f"Avg Win `{format_pct(stats.avg_win_pct)}`\n"
+            f"Avg Loss `{format_pct(stats.avg_loss_pct)}`"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Risk",
+        value=(
+            f"Stop-Out `{format_pct(stats.stop_out_rate)}`\n"
+            f"Trim Rate `{format_pct(stats.trim_rate)}`"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="Best / Worst",
+        value=f"Best `{format_trade_result(stats.best_trade)}`\nWorst `{format_trade_result(stats.worst_trade)}`",
+        inline=False,
+    )
+    if stats.asset_breakdown:
+        lines = []
+        for key, label in (("option", "Options"), ("stock", "Stocks"), ("future", "Futures"), ("unknown", "Other")):
+            asset = stats.asset_breakdown.get(key)
+            if asset:
+                lines.append(f"{label}: `{asset.wins}W / {asset.losses}L` closed `{asset.closed}` avg `{format_pct(asset.avg_return_pct)}`")
+        embed.add_field(name="By Type", value="\n".join(lines), inline=False)
+    _add_server(embed, guild_name)
     _set_footer(embed)
     return embed

@@ -146,7 +146,7 @@ OBVIOUS_CHATTER = {
 SYSTEM_PROMPT = """
 Classify a Discord trading alert. Return only JSON:
 {"action":"entry|add|average_down|average_up|trim|close|roll_option|ignore","asset_type":"option|stock|future|unknown","ticker":null,"contract":null,"expiration":null,"price":null,"old_contract":null,"old_expiration":null,"roll_cost":null,"roll_cost_type":null,"trade_note":null,"visible_text":null,"confidence":"high|medium|low"}
-For entry/add/average alerts, trade_note should be "Half Size", "Light", "Lotto", "Swing", "0DTE", "Day Trade", a slash-combo like "Swing / Half Size", or null. Only use "Day Trade" if the message explicitly says day trade/daytrade/scalp/intraday. For trim alerts, trade_note should be one clean current-position label such as "Half Position", "1/3 Position", "1/4 Position", "Runners", "Risk Free", "Majority Trimmed", or null. Do not mix entry sizing notes like Light/Half Size into trim trade_note.
+For entry/add/average alerts, trade_note should be "Half Size", "1/3 Size", "1/4 Size", "Light", "Lotto", "Swing", "0DTE", "Day Trade", a slash-combo like "Swing / Half Size", or null. Only use "Day Trade" if the message explicitly says day trade/daytrade/scalp/intraday. For trim alerts, trade_note should be one clean current-position label such as "Half Position", "1/3 Position", "1/4 Position", "Runners", "Risk Free", "Majority Trimmed", or null. Do not mix entry sizing notes like Light/Half Size into trim trade_note.
 entry=taking/filled/bought/opening/grabbing/starting a new position now. add=adding/reloading/averaging into an existing position when you cannot know from text whether the add is up or down. average_down=explicit averaging down. average_up=explicit averaging up. trim=partial scale out/trim/sell some while keeping runners. close=fully closed/all out/sold/STC/stopped out/cut/breakeven/B/E/at even exit/invalidated. roll_option=rolling from one option contract to another. ignore=watchlist/idea/maybe/recap/uncertain/chat.
 Extract ticker, asset_type, option contract like 530C, expiration like 5/24, and price. Do not invent missing details. Use asset_type="option" for option contracts, "stock" for shares/stock/common equity alerts, "future" for futures such as /ES, ES, /NQ, NQ, /MNQ, CL, GC, YM, RTY, and "unknown" only when unclear. If trim/close/add/roll lacks ticker or contract, use confidence="medium" unless the wording clearly points to the analyst's most recent position. Short messages like "added to SPY @.7" are add alerts and should use the latest open SPY position. Short messages like "exiting trade at B/E" are close alerts for the latest open position.
 If the message says weeklies/weekly/wkly, expiration means the Friday of the current week.
@@ -163,6 +163,7 @@ Common current-entry words include BTO, STO, bought, buying, entered, entering, 
 Formats seen in real analyst feeds:
 - "@Waxui Alerts *High Risk* | SPY here | 03/10 677P | Avg, 2.25" is an entry.
 - "OPEN $NAVN $20 call 6/18 @ 1.80 (swing, half sized for now)" is an entry.
+- "NEW ENTRY IDEA\nSwing Trade Idea\n$NUAI\n$5.85\nLevels...\nSL..." is a stock entry; the standalone price line is the entry price.
 - "Adding NVDA 225C @ 2.10" is add unless it explicitly says average down/up.
 - "added to SPY @.7" is add for the latest open SPY position.
 - "Averaging down SPY 530C at .80" and "double down NVDA 145P @ 1.90" are average_down.
@@ -170,6 +171,9 @@ Formats seen in real analyst feeds:
 - "Trim SPY here | 1.50 - 1.90 | 27%" is a trim; use 1.90 as the trim price.
 - "3.1 - trim\n3.5 - 50%" is a trim with price=3.5 and trade_note="Half Position"; ticker/contract can be null with medium confidence because it refers to the most recent position.
 - "leaving runners", "letting the rest ride", "QQQ runners from here", "locking some profits here", and "reduce risk here" are trim updates for the latest matching position, usually medium confidence if no ticker/contract is present.
+- "UPDATE\nTicker: QCOM\nLevel 4 hit\nLevels: 199 / 205 / 210\n+16%" is a trim/update for the open QCOM position; price=null and the +16% is gain, not entry price.
+- "UPDATE\nTicker: MSPR\nAll levels hit\n+22%" is a trim/update; price=null and the +22% is gain.
+- "NOTES / COMMENT" market commentary is ignore unless it contains a specific ticker update or clear executable trade.
 - "sold most of this for +80%" is a trim with trade_note="Majority Trimmed", not a full close unless the message also says all out/closed/flat.
 - Image/screenshot showing "SPX (SPXW) May19..." and "184.5%" is a trim/update; ticker=SPX, price=null, visible_text should include "184.5%" so gain math can use it.
 - "Closed SPY here" is close.
@@ -215,11 +219,47 @@ ENTRY_NOW_PHRASES = (
 )
 
 
+def _has_structured_stock_entry_setup(content: str) -> bool:
+    has_ticker = bool(re.search(r"\$[A-Z]{1,5}\b|\bTICKER\s*:", content, re.IGNORECASE))
+    has_entry_price = bool(
+        re.search(
+            r"(?:^|[\n|])\s*(?:[^\w$]{0,5}\s*)?ENTRY\s*[:.,-]\s*\$?\d{2,6}(?:\.\d{1,2})?",
+            content,
+            re.IGNORECASE,
+        )
+        or (
+            re.search(r"\bNEW\s+ENTRY\s+IDEA\b", content, re.IGNORECASE)
+            and re.search(
+                r"(?:^|[\n|])\s*(?:[^\w$]{0,5}\s*)?\$?\d{1,6}(?:\.\d{1,2})?\s*$",
+                content,
+                re.IGNORECASE | re.MULTILINE,
+            )
+        )
+    )
+    has_trade_plan_context = bool(
+        re.search(
+            r"\b(?:NEW\s+ENTRY\s+IDEA|SWING|TRADE\s+IDEA|POSITION|POS|LEVELS?|TARGETS?|SL|STOP\s+LOSS|STOP)\b",
+            content,
+            re.IGNORECASE,
+        )
+    )
+    has_waiting_context = bool(
+        re.search(
+            r"\b(?:NOT\s+IN|WAIT(?:ING)?|MAY\s+ENTER|MIGHT\s+ENTER|POSSIBLE|WATCH(?:ING)?|IF\s+IT|IF\s+WE|IF\s+THIS)\b",
+            content,
+            re.IGNORECASE,
+        )
+    )
+    return has_ticker and has_entry_price and has_trade_plan_context and not has_waiting_context
+
+
 def _looks_forward_only(content: str, parsed: Optional[ParsedAlert]) -> bool:
     if not parsed or parsed.action != "entry":
         return False
 
     upper = content.upper()
+    if parsed.asset_type == "stock" and _has_structured_stock_entry_setup(content):
+        return False
     if re.search(r"\b(?:LEVELS?|SUPPORT|RESISTANCE)\b", upper) and not any(_has_phrase(upper, phrase) for phrase in ENTRY_NOW_PHRASES):
         return True
     has_forward_context = any(_has_phrase(upper, phrase) for phrase in FORWARD_LOOKING_PHRASES)
@@ -323,6 +363,7 @@ def _has_local_exit_signal(text: str) -> bool:
         or bool(re.search(r"\b(?:RISK[- ]?FREE|RUNNERS?|SOME OFF|SCAL(?:E|ING)\s+SOME\s+OUT)\b", text))
         or bool(re.search(r"\b(?:LEAVING\s+RUNNERS?|LETTING\s+(?:THE\s+)?REST\s+RIDE|LOCK(?:ING)?\s+SOME\s+PROFITS?|REDUCE\s+RISK|SOLD\s+(?:MOST|MAJORITY)|TAKE\s+\d{1,3}%\s+OFF)\b", text))
         or bool(re.search(r"\b(?:DOWN TO|REDUCED TO|CUT TO)\s+(?:\d+/\d+|\d{1,3}%|RUNNERS?|A RUNNER)\b", text))
+        or bool(re.search(r"\b(?:LEVEL|TARGET|PT)\s*\d*\s*(?:HIT|TAGGED|REACHED|SMACKED)\b", text) and re.search(r"[+-]\d{1,4}(?:\.\d+)?\s*%", text))
     )
 
 
@@ -437,7 +478,8 @@ def _local_fast_path(content: str) -> Optional[ParsedAlert]:
     upper = stripped.upper()
     if not stripped or (stripped.endswith("?") and len(stripped) <= 80):
         return None
-    if _has_local_uncertainty(upper):
+    structured_stock_entry = local.asset_type == "stock" and _has_structured_stock_entry_setup(stripped)
+    if _has_local_uncertainty(upper) and not structured_stock_entry:
         return None
 
     has_entry = _has_local_entry_signal(upper)

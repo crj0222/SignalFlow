@@ -18,6 +18,8 @@ SignalFlow does not place trades, connect to brokerages, use self-botting, or pr
 - Position memory for analyst entries, adds, average up/down, option rolls, closes, and stops
 - Multiple alert channels per analyst, while still supporting a single channel
 - Code-generated premium recap cards for analyst stats/results
+- Analyst statistics for closed trades, win rate, average win/loss, stop-out rate, and open trades
+- Lightweight local web dashboard backed by the same SQLite database
 - SQLite database for local testing and lightweight hosting
 
 ## Install On Windows
@@ -63,6 +65,15 @@ OWNER_IDS=123456789012345678
 AUTO_TAKE_USER_IDS=123456789012345678
 CLEAR_GUILD_COMMANDS=false
 OPENAI_CLASSIFIER_TIMEOUT_SECONDS=8
+DASHBOARD_HOST=127.0.0.1
+DASHBOARD_PORT=8080
+ENABLE_WEB_DASHBOARD=false
+DASHBOARD_TOKEN=
+PUBLIC_DASHBOARD_URL=http://127.0.0.1:8080
+DASHBOARD_SESSION_SECRET=change_this_to_a_long_random_string
+DISCORD_CLIENT_ID=
+DISCORD_CLIENT_SECRET=
+DISCORD_OAUTH_REDIRECT_URI=http://127.0.0.1:8080/oauth/callback
 ```
 
 `GUILD_ID` makes slash command syncing faster while testing one server. Leave it blank for global commands.
@@ -76,6 +87,114 @@ py main.py
 ```
 
 The first run creates the SQLite database.
+
+To run the bot and dashboard together locally:
+
+```powershell
+$env:ENABLE_WEB_DASHBOARD="true"
+py main.py
+```
+
+## Run The Web Control Panel
+
+The web control panel reads the same SQLite database as the bot. It shows analyst performance and lets server admins manage analysts, channel mappings, review channel, classifier examples, open position memory, bot access, and branding settings.
+
+```powershell
+cd "C:\Users\Connor\Documents\Trading Alert Bot"
+.\.venv\Scripts\Activate.ps1
+py web_dashboard.py
+```
+
+Open:
+
+```text
+http://127.0.0.1:8080
+```
+
+The web dashboard now supports Discord OAuth login. Add these values to `.env` to enable it:
+
+```env
+DISCORD_CLIENT_ID=your_application_client_id
+DISCORD_CLIENT_SECRET=your_application_client_secret
+DISCORD_OAUTH_REDIRECT_URI=http://127.0.0.1:8080/oauth/callback
+DASHBOARD_SESSION_SECRET=use_a_long_random_string_here
+```
+
+In the Discord Developer Portal, open your application, go to **OAuth2**, and add this exact redirect URL:
+
+```text
+http://127.0.0.1:8080/oauth/callback
+```
+
+For hosting, change both Discord and `.env` to your public domain:
+
+```text
+https://yourdomain.com/oauth/callback
+```
+
+OAuth uses the `identify` and `guilds` scopes. A logged-in Discord user can only open dashboards for configured servers where they are the owner, have Administrator, or have Manage Server permission. Discord IDs in `OWNER_IDS` can see every configured server.
+
+Inside Discord, a server admin can run:
+
+```text
+/admin_web_link
+```
+
+That returns a private per-server dashboard link:
+
+```text
+http://127.0.0.1:8080/?guild_id=SERVER_ID&token=SERVER_TOKEN
+```
+
+Private links still work as a fallback. Before hosting this publicly, set `PUBLIC_DASHBOARD_URL` to your real domain and optionally keep a global owner token in `DASHBOARD_TOKEN`:
+
+```text
+PUBLIC_DASHBOARD_URL=https://yourdomain.com
+DASHBOARD_TOKEN=owner_only_master_token
+```
+
+## Railway Deployment
+
+This repo includes a `Procfile`, so Railway can start the app with:
+
+```text
+python main.py
+```
+
+On Railway, `main.py` automatically starts both the Discord bot and the web dashboard when Railway provides a `PORT` variable. Set these Railway variables:
+
+```env
+DISCORD_BOT_TOKEN=your_discord_bot_token
+DATABASE_PATH=/data/signalflow.sqlite3
+OWNER_IDS=your_discord_user_id
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_CLASSIFIER_MODEL=gpt-5-mini
+USE_AI_CLASSIFIER=true
+USE_IMAGE_CLASSIFIER=true
+ENABLE_WEB_DASHBOARD=true
+DISCORD_CLIENT_ID=your_discord_application_client_id
+DISCORD_CLIENT_SECRET=your_discord_application_client_secret
+PUBLIC_DASHBOARD_URL=https://your-railway-domain.up.railway.app
+DISCORD_OAUTH_REDIRECT_URI=https://your-railway-domain.up.railway.app/oauth/callback
+DASHBOARD_SESSION_SECRET=long_random_secret
+DASHBOARD_TOKEN=optional_owner_master_token
+```
+
+Do not set `DASHBOARD_HOST` on Railway unless you set it to:
+
+```env
+DASHBOARD_HOST=0.0.0.0
+```
+
+If you accidentally copy `DASHBOARD_HOST=127.0.0.1` to Railway, SignalFlow will still bind to `0.0.0.0` when Railway provides `PORT`.
+
+In the Discord Developer Portal, add the Railway callback URL exactly:
+
+```text
+https://your-railway-domain.up.railway.app/oauth/callback
+```
+
+For paid servers, attach a Railway volume mounted at `/data` or move to Postgres before launch. Plain SQLite without persistent storage can disappear on redeploys.
 
 ## Discord Setup
 
@@ -218,7 +337,13 @@ Generate a sample locally:
 .\.venv\Scripts\python.exe recap_renderer.py --sample --output logs\recap_sample.png
 ```
 
-The renderer is in `recap_renderer.py`. Later, database-backed analyst stats can feed it real daily or weekly recap data.
+Generate a recap from the SQLite database. Recaps only include trades that are fully closed, stopped out, or all out; trim-only open trades are not shown.
+
+```powershell
+.\.venv\Scripts\python.exe recap_renderer.py --from-db --database signalflow.sqlite3 --brand "Evenstar Trading" --footer "Evenstar Trading | Premium Recap" --output logs\recap_today.png
+```
+
+You can also open `/admin_dashboard`, go to `Testing`, and press `Daily Recap` to generate today's recap from the server's tracked alert logs.
 
 ## Notes
 

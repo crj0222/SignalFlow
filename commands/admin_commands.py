@@ -1,5 +1,8 @@
-import re
 import logging
+import os
+import re
+from datetime import date
+from pathlib import Path
 
 import discord
 from discord import app_commands
@@ -9,6 +12,7 @@ from database import Database
 from embeds import BRAND_COLOR, FOOTER, list_embed, success_embed, warning_embed
 from example_importer import examples_from_csv_bytes, examples_from_txt_bytes
 from models import ParsedAlert
+from recap_renderer import build_recap_card_from_database, render_recap_card
 
 
 EXAMPLE_ACTION_LABELS = {
@@ -428,6 +432,10 @@ class TestingAdminView(AdminDashboardView):
     async def test_alert(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await interaction.response.send_modal(TestAlertModal(self.cog))
 
+    @discord.ui.button(label="Daily Recap", style=discord.ButtonStyle.secondary, custom_id="signalflow:daily_recap", row=1)
+    async def daily_recap(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self.cog.dashboard_daily_recap(interaction)
+
 
 class AdminCommands(commands.Cog):
     def __init__(self, bot: commands.Bot, db: Database) -> None:
@@ -563,7 +571,7 @@ class AdminCommands(commands.Cog):
     def admin_testing_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="Testing",
-            description="Send a fake alert through SignalFlow routing without waiting for a real analyst post.",
+            description="Send a fake alert through SignalFlow routing or preview today's recap card.",
             color=BRAND_COLOR,
         )
         embed.add_field(
@@ -572,6 +580,36 @@ class AdminCommands(commands.Cog):
             inline=False,
         )
         return self._finish_admin_embed(embed)
+
+    async def dashboard_daily_recap(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not interaction.guild_id:
+            await interaction.response.send_message("Use this inside your server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            settings = self.db.get_guild_settings(interaction.guild_id)
+            brand = settings["recap_brand_name"] or settings["dashboard_display_name"] or interaction.guild.name
+            footer = settings["recap_footer"] or f"{brand} | Premium Recap"
+            output = Path("logs") / f"recap_{interaction.guild_id}_{date.today().isoformat()}.png"
+            card = build_recap_card_from_database(
+                self.db.path,
+                guild_id=interaction.guild_id,
+                recap_date=date.today(),
+                brand=brand,
+                footer=footer,
+            )
+            render_recap_card(card, output)
+        except Exception:
+            log.exception("Failed to render daily recap")
+            await interaction.followup.send(embed=warning_embed("I could not generate the recap from the database."), ephemeral=True)
+            return
+
+        await interaction.followup.send(
+            content="Today's database-backed recap preview:",
+            file=discord.File(output),
+            ephemeral=True,
+        )
 
     async def dashboard_add_analyst(self, interaction: discord.Interaction, analyst_text: str, display_name: str) -> None:
         if not interaction.guild or not interaction.guild_id:
@@ -621,7 +659,7 @@ class AdminCommands(commands.Cog):
             await interaction.response.send_message(embed=warning_embed("I could not find that text channel."), ephemeral=True)
             return
 
-        previous = self.db.set_analyst_channel(interaction.guild_id, analyst.id, channel.id)
+        previous = self.db.set_analyst_channel(interaction.guild_id, analyst.id, channel.id, channel.name)
         message = f"Added {channel.mention} to **{analyst.name}** routing."
         if previous:
             message = f"Reassigned {channel.mention} from **{previous.name}** to **{analyst.name}**."
@@ -636,7 +674,7 @@ class AdminCommands(commands.Cog):
         if not channel:
             await interaction.response.send_message(embed=warning_embed("I could not find that text channel."), ephemeral=True)
             return
-        self.db.set_review_channel(interaction.guild_id, channel.id)
+        self.db.set_review_channel(interaction.guild_id, channel.id, channel.name)
         await interaction.response.send_message(embed=success_embed(f"Review channel set to {channel.mention}."), ephemeral=True)
 
     async def dashboard_add_example(self, interaction: discord.Interaction, action_text: str, text: str) -> None:
@@ -756,10 +794,39 @@ class AdminCommands(commands.Cog):
             await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
             return
 
+        self.db.update_guild_metadata(
+            interaction.guild_id,
+            interaction.guild.name,
+            interaction.guild.icon.url if interaction.guild.icon else None,
+        )
         view = AdminMenuView(self, interaction.guild_id, interaction.guild.name, interaction.user.id)
         await interaction.response.send_message(
             embed=self.admin_overview_embed(interaction.guild_id, interaction.guild.name),
             view=view,
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="admin_web_link", description="Get this server's private SignalFlow web dashboard link.")
+    @admin_only()
+    async def admin_web_link(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild_id:
+            await interaction.response.send_message("Use this command inside your server.", ephemeral=True)
+            return
+
+        token = self.db.get_or_create_dashboard_token(interaction.guild_id)
+        default_url = f"http://127.0.0.1:{os.getenv('DASHBOARD_PORT', '8080')}"
+        base_url = os.getenv("PUBLIC_DASHBOARD_URL", default_url).strip().rstrip("/")
+        url = f"{base_url}/?guild_id={interaction.guild_id}&token={token}"
+        await interaction.response.send_message(
+            embed=list_embed(
+                "Private Web Dashboard",
+                [
+                    "Give this link only to this server's owner/admins.",
+                    url,
+                    "Rotate the token from the website settings if it leaks.",
+                ],
+                "No link available.",
+            ),
             ephemeral=True,
         )
 
