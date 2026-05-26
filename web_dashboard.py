@@ -1090,7 +1090,7 @@ def _render_server_picker(auth: AuthContext, token: str = "", message: str = "")
         <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
           <div>
             <h1>Choose a server</h1>
-            <p>Each server has its own analysts, examples, memory, branding, stats, and access settings.</p>
+            <p>Each server has its own analysts, examples, memory, branding, and stats.</p>
           </div>
           {_auth_chip(auth)}
         </div>
@@ -1364,8 +1364,6 @@ def _render_dashboard(guild_id: int, auth: AuthContext, token: str = "", message
     embed_color = settings["dashboard_embed_color"] if settings and settings["dashboard_embed_color"] else ""
     recap_brand = settings["recap_brand_name"] if settings and settings["recap_brand_name"] else ""
     recap_footer = settings["recap_footer"] if settings and settings["recap_footer"] else ""
-    disabled_reason = str(settings["disabled_reason"] or "") if settings else ""
-    guild_active = bool(settings["is_active"]) if settings else True
     review_channel_label = (
         _channel_display_name(guild_id, int(review_channel_id), settings["review_channel_name"])
         if review_channel_id
@@ -1491,7 +1489,7 @@ def _render_dashboard(guild_id: int, auth: AuthContext, token: str = "", message
     </section>
 
     <section class="grid" id="settings">
-      <div class="panel span-8">
+      <div class="panel span-12">
         <div class="panel-head"><div><h2>Branding and Recaps</h2><p>These values feed the web dashboard, Discord embeds, and daily recap card.</p></div></div>
         <form method="post" action="{action}" class="form-grid">
           {hidden}<input type="hidden" name="action" value="update_settings">
@@ -1501,16 +1499,6 @@ def _render_dashboard(guild_id: int, auth: AuthContext, token: str = "", message
           <div><label>Recap Brand Name</label><input name="recap_brand_name" value="{html.escape(str(recap_brand))}" placeholder="Evenstar Trading"></div>
           <div><label>Recap Footer</label><input name="recap_footer" value="{html.escape(str(recap_footer))}" placeholder="Evenstar Trading | Premium Recap"></div>
           <div><button type="submit">Save Settings</button></div>
-        </form>
-      </div>
-      <div class="panel span-4">
-        <div class="panel-head"><div><h2>Access</h2><p>Disable routing for this server without showing a billing message to admins.</p></div></div>
-        <form method="post" action="{action}">
-          {hidden}<input type="hidden" name="action" value="update_access">
-          <label>Status</label>
-          <select name="is_active"><option value="1"{' selected' if guild_active else ''}>Active</option><option value="0"{'' if guild_active else ' selected'}>Disabled</option></select>
-          <label>Disabled Reason</label><input name="disabled_reason" value="{html.escape(disabled_reason)}" placeholder="Non-payment, paused, etc.">
-          <button class="secondary" type="submit">Update Access</button>
         </form>
       </div>
     </section>
@@ -1866,11 +1854,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 recap_footer=self._field(form, "recap_footer"),
             )
             return "Settings saved."
-
-        if action == "update_access":
-            is_active = self._field(form, "is_active") == "1"
-            DB.set_guild_active(guild_id, is_active, self._field(form, "disabled_reason"))
-            return "Bot access updated."
 
         if action == "rotate_token":
             DB.rotate_dashboard_token(guild_id)
