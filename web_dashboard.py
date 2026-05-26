@@ -624,7 +624,11 @@ def _is_guild_manager(guild: dict[str, object]) -> bool:
 def _allowed_guilds_for_discord_user(user_id: int, discord_guilds: list[dict[str, object]]) -> tuple[int, ...]:
     configured = set(_all_guild_ids())
     if user_id in OWNER_IDS:
-        allowed = configured
+        allowed = set()
+        for guild in discord_guilds:
+            guild_id = str(guild.get("id", ""))
+            if guild_id.isdigit():
+                allowed.add(int(guild_id))
     else:
         allowed = set()
         for guild in discord_guilds:
