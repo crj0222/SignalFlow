@@ -1025,8 +1025,7 @@ def _render_login(message: str = "", next_path: str = "/") -> str:
 
 
 def _render_server_picker(auth: AuthContext, token: str = "", message: str = "") -> str:
-    allowed = auth.allowed_guild_ids if auth.allowed_guild_ids else _all_guild_ids()
-    rows = _configured_guild_rows(allowed if auth.mode == "oauth" else None)
+    rows = _configured_guild_rows(auth.allowed_guild_ids if auth.mode == "oauth" else None)
     cards = []
     for row in rows:
         guild_id = int(row["guild_id"])
@@ -1545,9 +1544,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         return AuthContext(ok=False, reason="Sign in with Discord or use a valid private dashboard link.")
 
-    def _login_redirect(self) -> None:
+    def _login_redirect(self, message: str = "") -> None:
         next_path = self.path if self.path.startswith("/") else "/"
-        self._redirect("/login?" + urlencode({"next": _sanitize_next(next_path)}))
+        params = {"next": _sanitize_next(next_path)}
+        if message:
+            params["message"] = message
+        self._redirect("/login?" + urlencode(params))
 
     def _handle_login_start(self, query: dict[str, list[str]]) -> None:
         if not _oauth_configured():
@@ -1625,7 +1627,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         auth = self._auth_context(guild_id, query)
         if not auth.ok:
             if _oauth_configured():
-                self._login_redirect()
+                self._login_redirect(auth.reason)
             else:
                 self._send(401, auth.reason.encode("utf-8"), "text/plain; charset=utf-8")
             return
