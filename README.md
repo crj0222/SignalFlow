@@ -196,6 +196,13 @@ https://your-railway-domain.up.railway.app/oauth/callback
 
 For paid servers, attach a Railway volume mounted at `/data` or move to Postgres before launch. Plain SQLite without persistent storage can disappear on redeploys.
 
+If Discord login returns you to the login page, check these first:
+
+- `OWNER_IDS` must include your Discord user ID if you want full owner access.
+- `DASHBOARD_SESSION_SECRET` must be set to one stable long random value and should not change between deploys.
+- `PUBLIC_DASHBOARD_URL` must be the Railway HTTPS domain, without `/login` or any path at the end.
+- After changing Railway variables, redeploy the service.
+
 ## Discord Setup
 
 1. Open the [Discord Developer Portal](https://discord.com/developers/applications).

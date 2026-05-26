@@ -59,6 +59,7 @@ MANAGE_GUILD = 0x20
 ADMINISTRATOR = 0x8
 SESSION_COOKIE = "sf_dashboard_session"
 STATE_COOKIE = "sf_oauth_state"
+SIGNED_SESSION_PREFIX = "sfv1."
 SESSION_SECONDS = 7 * 24 * 60 * 60
 STATE_SECONDS = 10 * 60
 EXAMPLE_ACTIONS = ("entry", "trim", "close", "ignore")
@@ -428,6 +429,12 @@ def _parse_cookie(header: str, name: str) -> str:
     return item.value if item else ""
 
 
+def _append_query(path: str, params: dict[str, str]) -> str:
+    clean = _sanitize_next(path)
+    separator = "&" if "?" in clean else "?"
+    return clean + separator + urlencode(params)
+
+
 def _sanitize_next(next_path: str) -> str:
     if not next_path or not next_path.startswith("/") or next_path.startswith("//"):
         return "/"
@@ -643,8 +650,18 @@ def _create_session(user: dict[str, object], discord_guilds: list[dict[str, obje
     username = str(user.get("global_name") or user.get("username") or f"User {user_id}")
     avatar_url = _discord_avatar_url(user)
     allowed = _allowed_guilds_for_discord_user(user_id, discord_guilds)
-    token = secrets.token_urlsafe(32)
     now = time.time()
+    token = SIGNED_SESSION_PREFIX + _sign_json(
+        {
+            "sid": secrets.token_urlsafe(12),
+            "uid": user_id,
+            "username": username,
+            "avatar_url": avatar_url,
+            "allowed": list(allowed),
+            "iat": int(now),
+            "exp": int(now + SESSION_SECONDS),
+        }
+    )
     with DB.connect() as conn:
         conn.execute("DELETE FROM dashboard_sessions WHERE expires_at < ?", (now,))
         conn.execute(
@@ -654,12 +671,37 @@ def _create_session(user: dict[str, object], discord_guilds: list[dict[str, obje
             """,
             (token, user_id, username, avatar_url, json.dumps(list(allowed)), now, now + SESSION_SECONDS),
         )
+    print(
+        "SignalFlow dashboard OAuth login "
+        f"user_id={user_id} allowed_guilds={len(allowed)} configured_guilds={len(_all_guild_ids())} "
+        f"secure_cookie={_secure_cookie()}",
+        flush=True,
+    )
     return token
 
 
 def _load_session(token: str) -> Optional[AuthContext]:
     if not token:
         return None
+    if token.startswith(SIGNED_SESSION_PREFIX):
+        payload = _verify_signed_json(token.removeprefix(SIGNED_SESSION_PREFIX))
+        if not payload or int(payload.get("exp", 0) or 0) < int(time.time()):
+            return None
+        try:
+            user_id = int(payload["uid"])
+            allowed = tuple(int(item) for item in payload.get("allowed", []))
+        except (TypeError, ValueError, KeyError):
+            return None
+        if user_id in OWNER_IDS:
+            allowed = _all_guild_ids()
+        return AuthContext(
+            ok=True,
+            mode="oauth",
+            user_id=user_id,
+            username=str(payload.get("username") or f"User {user_id}"),
+            avatar_url=str(payload.get("avatar_url") or ""),
+            allowed_guild_ids=allowed,
+        )
     now = time.time()
     with DB.connect() as conn:
         row = conn.execute("SELECT * FROM dashboard_sessions WHERE session_token = ?", (token,)).fetchone()
@@ -1536,6 +1578,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not guild_id or guild_id in session.allowed_guild_ids:
                 return session
             return AuthContext(ok=False, mode="oauth", reason="You do not have dashboard access for this server.")
+        if query.get("oauth", [""])[0] == "complete":
+            if session_token:
+                return AuthContext(
+                    ok=False,
+                    reason="Discord login succeeded, but the session cookie could not be verified. Set a stable DASHBOARD_SESSION_SECRET in Railway and redeploy.",
+                )
+            return AuthContext(
+                ok=False,
+                reason="Discord login succeeded, but your browser did not return the SignalFlow session cookie. Make sure PUBLIC_DASHBOARD_URL exactly matches the Railway HTTPS domain and cookies are allowed.",
+            )
 
         if not DASHBOARD_TOKEN and not _oauth_configured():
             allowed = _all_guild_ids()
@@ -1601,7 +1653,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         next_path = _sanitize_next(str(state_payload.get("next") or "/"))
         self._redirect(
-            next_path,
+            _append_query(next_path, {"oauth": "complete"}),
             cookies=[_cookie(SESSION_COOKIE, session_token, SESSION_SECONDS), _expired_cookie(STATE_COOKIE)],
         )
 
