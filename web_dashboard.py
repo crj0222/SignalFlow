@@ -1594,7 +1594,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not guild_id or guild_id in allowed:
                 return AuthContext(ok=True, mode="local", allowed_guild_ids=allowed)
 
-        return AuthContext(ok=False, reason="Sign in with Discord or use a valid private dashboard link.")
+        return AuthContext(ok=False, reason="Sign in with Discord to continue.")
 
     def _login_redirect(self, message: str = "") -> None:
         next_path = self.path if self.path.startswith("/") else "/"
